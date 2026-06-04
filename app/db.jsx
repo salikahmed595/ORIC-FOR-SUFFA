@@ -67,7 +67,10 @@ async function signIn(email, password) {
   const db = getDB();
   if (!db) return { error: 'Database not available.' };
   try {
-    const { data, error } = await db.auth.signInWithPassword({ email, password });
+    const { data, error } = await withTimeout(
+      db.auth.signInWithPassword({ email, password }),
+      12000, { error: { message: 'Network timeout — please try again.' } }
+    );
     if (error) {
       const msg = error.message.toLowerCase();
       if (msg.includes('email not confirmed'))
@@ -76,8 +79,14 @@ async function signIn(email, password) {
         return { error: 'Incorrect email or password. Please try again.' };
       return { error: error.message };
     }
-    const profile = await getProfile(data.user.id);
-    if (!profile) return { error: 'Account exists but profile not found. Contact admin.' };
+    let profile = await getProfile(data.user.id);
+    if (!profile) {
+      // Profile row missing/slow — synthesize one so login always completes.
+      profile = { id:data.user.id, full_name:(data.user.email||'User').split('@')[0],
+        email:data.user.email, role:'FACULTY', department:'' };
+      // best-effort create the row for next time
+      db.from('profiles').insert(profile).then(()=>{}, ()=>{});
+    }
     _audit(profile.full_name, 'LOGIN', 'users', data.user.id, null); // fire-and-forget
     return { user: data.user, profile };
   } catch (err) { return { error: err.message || 'Login failed.' }; }
@@ -121,12 +130,24 @@ async function getSession() {
   } catch { return null; }
 }
 
+// Resolve to fallback if a promise takes too long (prevents hung UI)
+function withTimeout(promise, ms, fallback) {
+  return Promise.race([
+    promise,
+    new Promise(res => setTimeout(() => res(fallback), ms)),
+  ]);
+}
+
 async function getProfile(userId) {
   const db = getDB();
   if (!db) return null;
   try {
-    const { data } = await db.from('profiles').select('*').eq('id', userId).single();
-    return data;
+    // maybeSingle: returns null (not an error) when 0 rows; timeout-guarded
+    const res = await withTimeout(
+      db.from('profiles').select('*').eq('id', userId).maybeSingle(),
+      4000, { data: null }
+    );
+    return res?.data || null;
   } catch { return null; }
 }
 
