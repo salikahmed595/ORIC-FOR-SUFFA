@@ -10,9 +10,24 @@ let _connected = false;
 function getDB() {
   if (!_db) {
     if (!window.supabase) { console.warn('[DSUdb] Supabase CDN not loaded.'); return null; }
-    _db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    _db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+      auth: {
+        persistSession:    true,   // store session in localStorage
+        autoRefreshToken:  true,   // silently refresh before expiry
+        detectSessionInUrl:false,
+        storageKey:        'dsu-oric-session',
+      },
+    });
   }
   return _db;
+}
+
+/* Listen for auth state changes (INITIAL_SESSION, SIGNED_IN, SIGNED_OUT) */
+function onAuthChange(callback) {
+  const db = getDB();
+  if (!db) { callback(null, null); return ()=>{}; }
+  const { data:{ subscription } } = db.auth.onAuthStateChange(callback);
+  return () => subscription.unsubscribe();
 }
 
 /* ── Helpers ────────────────────────────────────────────────── */
@@ -53,7 +68,14 @@ async function signIn(email, password) {
   if (!db) return { error: 'Database not available.' };
   try {
     const { data, error } = await db.auth.signInWithPassword({ email, password });
-    if (error) return { error: error.message };
+    if (error) {
+      const msg = error.message.toLowerCase();
+      if (msg.includes('email not confirmed'))
+        return { error: 'Please confirm your email first, or ask the admin to confirm your account.' };
+      if (msg.includes('invalid login') || msg.includes('invalid credentials'))
+        return { error: 'Incorrect email or password. Please try again.' };
+      return { error: error.message };
+    }
     const profile = await getProfile(data.user.id);
     if (!profile) return { error: 'Account exists but profile not found. Contact admin.' };
     await _audit(profile.full_name, 'LOGIN', 'users', data.user.id, null);
@@ -310,7 +332,7 @@ window.DSUdb = {
   // connection
   ping, isConnected, ACTIVE_PERIOD_ID,
   // auth
-  signIn, signUp, signOut, getSession, getProfile,
+  onAuthChange, signIn, signUp, signOut, getSession, getProfile,
   // data
   loadAllData, saveScore,
   // files

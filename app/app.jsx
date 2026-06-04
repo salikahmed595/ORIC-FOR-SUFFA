@@ -42,31 +42,36 @@ function App(){
   const [secs, setSecs]             = uA(()=>window.DSUData.SECTIONS);
   const toastTimer = rA(null);
 
-  // ── Bootstrap: check existing session, ping Supabase ────────
+  // ── Bootstrap: auth-state listener + Supabase data load ─────
   eA(()=>{
-    async function init() {
-      if (!window.DSUdb) { setMode('auth'); return; }
-      const online = await window.DSUdb.ping();
+    if (!window.DSUdb) { setMode('auth'); return; }
+
+    // Load live data in background (non-blocking)
+    window.DSUdb.ping().then(online => {
       setDbOnline(online);
-
       if (online) {
-        // Load live DB data over static seed
-        const result = await window.DSUdb.loadAllData();
-        if (result) { setInds(result.indicators); setSecs(result.sections); }
-
-        // Check if user already has a session
-        const session = await window.DSUdb.getSession();
-        if (session) {
-          const profile = await window.DSUdb.getProfile(session.user.id);
-          if (profile) {
-            _applyProfile(profile);
-            return;
-          }
-        }
+        window.DSUdb.loadAllData().then(result => {
+          if (result) { setInds(result.indicators); setSecs(result.sections); }
+        });
       }
-      setMode('auth');
-    }
-    init();
+    });
+
+    // Auth-state listener fires immediately with INITIAL_SESSION if a
+    // stored session exists — this is how session survives page refresh.
+    const unsub = window.DSUdb.onAuthChange(async (event, session) => {
+      if (session && session.user) {
+        const profile = await window.DSUdb.getProfile(session.user.id);
+        if (profile) { _applyProfile(profile); }
+        else         { setMode('auth'); }         // account exists but no profile yet
+      } else if (event === 'SIGNED_OUT' || (!session && event !== 'INITIAL_SESSION')) {
+        setCurrentUser(null);
+        setMode('auth');
+      }
+      // If event === 'INITIAL_SESSION' with no session → go to auth
+      if (event === 'INITIAL_SESSION' && !session) setMode('auth');
+    });
+
+    return unsub; // cleanup on unmount
   },[]);
 
   function _applyProfile(profile) {
