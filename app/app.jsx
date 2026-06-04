@@ -1,4 +1,4 @@
-// app.jsx — root: state store, splash, router, tweaks
+// app.jsx — root: Supabase bootstrap, state store, splash, router, tweaks
 const { useState:uA, useEffect:eA, useRef:rA } = React;
 const A = window.DSU;
 
@@ -34,10 +34,30 @@ function App(){
   const [stack, setStack] = uA([]);
   const [toast, setToast] = uA(null);
   const [seenOnboard, setSeenOnboard] = uA(false);
+  const [dbOnline, setDbOnline] = uA(false);
+  // Initialise from static seed; Supabase data overwrites on connect
   const [inds, setInds] = uA(()=>JSON.parse(JSON.stringify(window.DSUData.INDICATORS)));
+  const [secs, setSecs] = uA(()=>window.DSUData.SECTIONS);
   const toastTimer = rA(null);
 
-  eA(()=>{ const x=setTimeout(()=>setMode('login'), 2100); return ()=>clearTimeout(x); },[]);
+  // ── Bootstrap: ping Supabase then load live data ──────────
+  eA(()=>{
+    const splashTimer = setTimeout(()=>setMode('login'), 2100);
+    if (window.DSUdb) {
+      window.DSUdb.ping().then(online => {
+        setDbOnline(online);
+        if (online) {
+          window.DSUdb.loadAllData().then(result => {
+            if (result) {
+              setInds(result.indicators);
+              setSecs(result.sections);
+            }
+          });
+        }
+      });
+    }
+    return ()=>clearTimeout(splashTimer);
+  },[]);
 
   function fireToast(msg, type='success'){
     setToast({ msg, type, key:Date.now() });
@@ -45,9 +65,18 @@ function App(){
     toastTimer.current = setTimeout(()=>setToast(null), 2800);
   }
 
+  // ── Store.update syncs both local state AND Supabase ──────
+  async function updateIndicator(code, patch){
+    setInds(list=>list.map(k=>k.code===code?{...k,...patch}:k));
+    if (window.DSUdb && dbOnline) {
+      await window.DSUdb.saveScore(code, patch);
+    }
+  }
+
   const store = {
-    user: USERS[role], role, indicators:inds, sections:window.DSUData.SECTIONS, activeTab:tab,
-    login(r){ setRole(r); setStack([]); setTab(r==='review'?'home':'home');
+    user: USERS[role], role, indicators:inds, sections:secs, activeTab:tab,
+    dbOnline,
+    login(r){ setRole(r); setStack([]); setTab('home');
       if (r==='faculty' && !seenOnboard) setMode('onboarding'); else setMode('app'); },
     finishOnboarding(){ setSeenOnboard(true); setMode('app'); },
     logout(){ setMode('login'); setStack([]); setTab('home'); },
@@ -55,7 +84,7 @@ function App(){
     back(){ setStack(s=>s.slice(0,-1)); },
     setTab(id){ setStack([]); setTab(id); },
     toast: fireToast,
-    update(code, patch){ setInds(list=>list.map(k=>k.code===code?{...k,...patch}:k)); },
+    update: updateIndicator,
   };
 
   let sbBg=A.C.maroon, sbFg='#fff';
@@ -76,22 +105,34 @@ function App(){
   ];
   const tabs = role==='review'?reviewTabs:facultyTabs;
 
+  function DBBadge(){
+    if (!dbOnline) return null;
+    return (
+      <span style={{ display:'inline-flex', alignItems:'center', gap:4, height:18, padding:'0 7px',
+        borderRadius:9, background:'rgba(255,255,255,.18)', fontFamily:A.F.body, fontSize:10, color:'#fff' }}>
+        <span style={{ width:6, height:6, borderRadius:'50%', background:'#4CAF50' }}/>Live
+      </span>
+    );
+  }
+
   function bell(){
     const unread = inds.filter(k=>k.review && ['APPROVED','REJECTED','RETURNED'].includes(k.status)).length;
     return (
-      <button style={btnReset} onClick={()=>fireToast(unread+' indicator(s) have reviewer feedback','info')} aria-label="Notifications">
-        <div style={{ position:'relative' }}>
-          <Icon name="bell" size={22} color="#fff"/>
-          {unread>0 && <span style={{ position:'absolute', top:-3, right:-4, minWidth:15, height:15, padding:'0 3px', borderRadius:8,
-            background:A.C.yellow, color:A.C.maroonDark, fontFamily:A.F.mono, fontWeight:700, fontSize:9,
-            display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid '+A.C.maroon }}>{unread}</span>}
-        </div>
-      </button>
+      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+        <DBBadge/>
+        <button style={btnReset} onClick={()=>fireToast(unread+' indicator(s) have reviewer feedback','info')} aria-label="Notifications">
+          <div style={{ position:'relative' }}>
+            <Icon name="bell" size={22} color="#fff"/>
+            {unread>0 && <span style={{ position:'absolute', top:-3, right:-4, minWidth:15, height:15, padding:'0 3px', borderRadius:8,
+              background:A.C.yellow, color:A.C.maroonDark, fontFamily:A.F.mono, fontWeight:700, fontSize:9,
+              display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid '+A.C.maroon }}>{unread}</span>}
+          </div>
+        </button>
+      </div>
     );
   }
 
   function renderApp(){
-    // stacked screens
     if (stack.length){
       const top = stack[stack.length-1];
       if (top.screen==='section') return <SectionScreen store={store} params={top.params}/>;
@@ -116,7 +157,7 @@ function App(){
     <>
       <PhoneFrame statusBg={sbBg} statusFg={sbFg}>
         <Toast toast={toast}/>
-        {mode==='splash' && <Splash/>}
+        {mode==='splash' && <Splash dbOnline={dbOnline}/>}
         {mode==='login' && <LoginScreen store={store}/>}
         {mode==='onboarding' && <OnboardingScreen store={store}/>}
         {mode==='app' && <>
@@ -140,7 +181,7 @@ function App(){
   );
 }
 
-function Splash(){
+function Splash({ dbOnline }){
   return (
     <div className="dsu-fade" style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
       justifyContent:'center', background:'#fff', position:'relative' }}>
@@ -150,7 +191,17 @@ function Splash(){
       <div style={{ position:'absolute', bottom:60, width:140, height:4, borderRadius:2, background:A.C.border, overflow:'hidden' }}>
         <div className="dsu-load" style={{ height:'100%', background:A.C.maroon, borderRadius:2 }}/>
       </div>
-      <div style={{ position:'absolute', bottom:34, fontFamily:A.F.body, fontSize:11, color:A.C.ink3 }}>DHA Suffa University</div>
+      <div style={{ position:'absolute', bottom:34, display:'flex', alignItems:'center', gap:6,
+        fontFamily:A.F.body, fontSize:11, color:A.C.ink3 }}>
+        <span>DHA Suffa University</span>
+        {dbOnline && <>
+          <span>·</span>
+          <span style={{ display:'inline-flex', alignItems:'center', gap:3, color:'#2E7D32' }}>
+            <span style={{ width:6, height:6, borderRadius:'50%', background:'#2E7D32', display:'inline-block' }}/>
+            Live DB
+          </span>
+        </>}
+      </div>
     </div>
   );
 }
