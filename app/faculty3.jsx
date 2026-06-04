@@ -1,5 +1,5 @@
 // faculty3.jsx — Evidence Hub, Reports, Profile
-const { useState:uS3, useRef:rS3, useEffect:eS3 } = React;
+const { useState:uS3 } = React;
 const { C:E, F:EF, SHADOW:ES } = window.DSU;
 
 /* ── File helpers ─────────────────────────────────────────── */
@@ -125,61 +125,251 @@ function DocCard({ doc, editable, onRename, onDelete }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   EVIDENCE HUB — each indicator manages its own file input via
-   <label htmlFor> so file picker works on all mobile browsers
+   EVIDENCE HUB — top "Upload Documents" button (batch/single) +
+   per-indicator yellow "+", plus an "All Files" library view
 ═══════════════════════════════════════════════════════════════ */
 function EvidenceScreen({ store }) {
   const { indicators, sections } = store;
-  const [tab, setTab] = uS3('All');
+  const [tab, setTab]   = uS3('All');
+  const [view, setView] = uS3('indicators');     // 'indicators' | 'files'
+
+  // batch-upload state
+  const [pickedFiles, setPickedFiles]   = uS3([]);     // File[] chosen for batch
+  const [batchTarget, setBatchTarget]   = uS3('');     // kpi code to attach to
+  const [batchOpen, setBatchOpen]       = uS3(false);  // sheet open
+  const [batchBusy, setBatchBusy]       = uS3(false);  // uploading
+
   const tabs    = ['All', ...sections.map(s=>'Section '+s.id)];
   const list    = indicators.filter(k=> tab==='All' || k.section===tab.split(' ')[1]);
   const withAll = indicators.filter(k=>k.docs.length>=k.reqDocs.length).length;
   const totalDocs = indicators.reduce((s,k)=>s+k.docs.length,0);
 
+  // Flat list of every uploaded file across all indicators
+  const allFiles = [];
+  indicators.forEach(k=> (k.docs||[]).forEach((d,i)=> allFiles.push({
+    ...d, kpiCode:k.code, kpiName:k.name, accent:(sections.find(s=>s.id===k.section)||{}).accent||E.maroon,
+    status:k.status, docIndex:i,
+  })));
+
+  function onBatchPick(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    // default target = first editable indicator, else first overall
+    const def = indicators.find(k=>['DRAFT','RETURNED'].includes(k.status)) || indicators[0];
+    setPickedFiles(files);
+    setBatchTarget(def?.code || '');
+    setBatchOpen(true);
+  }
+
+  async function doBatchUpload() {
+    const ind = indicators.find(k=>k.code===batchTarget);
+    if (!ind) { store.toast('Please choose an indicator','error'); return; }
+    setBatchBusy(true);
+
+    let entryId = ind._entryId;
+    if (window.DSUdb?.isConnected() && !entryId) {
+      await window.DSUdb.saveScore(batchTarget, { score:0, value:0, remarks:'' },
+        window.DSUdb.ACTIVE_PERIOD_ID, store.currentUser);
+      const fresh = await window.DSUdb.loadAllData();
+      entryId = fresh?.indicators.find(k=>k.code===batchTarget)?._entryId || null;
+      if (entryId) store.update(batchTarget, { _entryId:entryId });
+    }
+
+    const newDocs = [...ind.docs];
+    let added = 0;
+    for (const file of pickedFiles) {
+      if (file.size > 52428800) { store.toast(`${file.name} skipped — over 50 MB`,'error'); continue; }
+      const kind = getFileKindLocal(file.type);
+      const size = formatFileSize(file.size);
+      let url = '';
+      if (window.DSUdb?.isConnected()) {
+        const up = await window.DSUdb.uploadFile(file, batchTarget, store.currentUser?.id);
+        if (up) {
+          url = up.url;
+          if (entryId) await window.DSUdb.addEvidence(entryId, file.name, size, kind, file.type,
+            url, store.currentUser?.id, store.currentUser?.full_name);
+        }
+      }
+      newDocs.push({ name:file.name, size, kind, url });
+      added++;
+    }
+    store.update(batchTarget, { docs:newDocs });
+    setBatchBusy(false);
+    setBatchOpen(false);
+    setPickedFiles([]);
+    setView('files'); // jump to the library so they see where files went
+    store.toast(`${added} file${added!==1?'s':''} uploaded to ${batchTarget}`, 'success');
+  }
+
   return (
-    <Scroll>
-      {/* Step-by-step guide banner */}
-      <div style={{ background:E.maroon, color:'#fff', borderRadius:14, padding:'14px 16px', marginBottom:16 }}>
-        <div style={{ fontFamily:EF.display, fontWeight:700, fontSize:15, marginBottom:10 }}>How to upload documents</div>
-        {['Tap any indicator card below to expand it',
-          'Tap the yellow "Add Document" button inside',
-          'Choose any file — PDF, Word, Excel, images, etc.',
-          'Your document is saved and linked automatically'].map((s,i)=>(
-          <div key={i} style={{ display:'flex', gap:9, marginBottom:5, alignItems:'flex-start' }}>
-            <span style={{ width:20, height:20, borderRadius:'50%', background:'rgba(255,255,255,.2)',
-              display:'flex', alignItems:'center', justifyContent:'center',
-              fontFamily:EF.mono, fontWeight:700, fontSize:11, flexShrink:0 }}>{i+1}</span>
-            <span style={{ fontFamily:EF.body, fontSize:12.5, lineHeight:'18px', opacity:.9 }}>{s}</span>
+    <>
+      {/* hidden multi-file input for batch upload */}
+      <input id="batch-upload" type="file" accept="*" multiple
+        style={{ position:'absolute', left:'-9999px', opacity:0, width:1, height:1 }}
+        onChange={onBatchPick}/>
+
+      <Scroll>
+        {/* Prominent Upload button (batch or single) */}
+        <label htmlFor="batch-upload" style={{ display:'block', cursor:'pointer', marginBottom:14 }}>
+          <div style={{ background:`linear-gradient(135deg, ${E.maroon}, ${E.maroonDark})`, color:'#fff',
+            borderRadius:14, padding:'16px', boxShadow:ES.fab, display:'flex', alignItems:'center', gap:13 }}>
+            <span style={{ width:46, height:46, borderRadius:12, background:E.yellow, flexShrink:0,
+              display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <Icon name="upload" size={24} color={E.maroonDark} sw={2.4}/>
+            </span>
+            <div style={{ flex:1 }}>
+              <div style={{ fontFamily:EF.display, fontWeight:700, fontSize:16 }}>Upload Documents</div>
+              <div style={{ fontFamily:EF.body, fontSize:12, opacity:.85, marginTop:2 }}>
+                Select one or many files at once — any format
+              </div>
+            </div>
+            <Icon name="chevR" size={20} color="#fff"/>
           </div>
-        ))}
-      </div>
+        </label>
 
-      {/* Summary */}
-      <Card style={{ marginBottom:14 }}>
-        <div style={{ fontFamily:EF.body, fontSize:12.5, color:E.ink, marginBottom:9 }}>
-          <b style={{ fontFamily:EF.mono }}>{withAll} of {indicators.length}</b> indicators have all required documents
+        {/* Summary */}
+        <Card style={{ marginBottom:14 }}>
+          <div style={{ fontFamily:EF.body, fontSize:12.5, color:E.ink, marginBottom:9 }}>
+            <b style={{ fontFamily:EF.mono }}>{withAll} of {indicators.length}</b> indicators have all required documents
+          </div>
+          <ProgressBar value={withAll} max={indicators.length}/>
+          <div style={{ fontFamily:EF.body, fontSize:11.5, color:E.ink2, marginTop:7 }}>
+            {totalDocs} document{totalDocs!==1?'s':''} uploaded in total
+          </div>
+        </Card>
+
+        {/* View toggle: By Indicator | All Files */}
+        <div style={{ display:'flex', gap:6, background:E.surface, borderRadius:12, padding:4, marginBottom:14 }}>
+          {[['indicators','By Indicator'],['files',`All Files (${allFiles.length})`]].map(([id,label])=>(
+            <button key={id} onClick={()=>setView(id)} style={{ ...btnReset, flex:1, justifyContent:'center',
+              height:36, borderRadius:9, background:view===id?'#fff':'transparent',
+              boxShadow:view===id?ES.card:'none', fontFamily:EF.display, fontWeight:600, fontSize:13,
+              color:view===id?E.maroon:E.ink2 }}>{label}</button>
+          ))}
         </div>
-        <ProgressBar value={withAll} max={indicators.length}/>
-        <div style={{ fontFamily:EF.body, fontSize:11.5, color:E.ink2, marginTop:7 }}>
-          {totalDocs} document{totalDocs!==1?'s':''} total
+
+        {view==='indicators' ? (
+          <>
+            {/* Section tabs */}
+            <div className="dsu-scroll" style={{ display:'flex', gap:8, overflowX:'auto', margin:'0 -16px 14px', padding:'0 16px' }}>
+              {tabs.map(t=>(
+                <button key={t} onClick={()=>setTab(t)} style={{ ...btnReset, flexShrink:0, height:32, padding:'0 14px',
+                  borderRadius:16, fontFamily:EF.body, fontWeight:600, fontSize:12.5,
+                  background:tab===t?E.maroon:'#fff', color:tab===t?'#fff':E.ink2,
+                  border:`1px solid ${tab===t?E.maroon:E.border}` }}>{t}</button>
+              ))}
+            </div>
+            {list.map(k=>(
+              <IndicatorEvidenceCard key={k.code} ind={k} store={store} sections={sections}/>
+            ))}
+          </>
+        ) : (
+          <AllFilesList allFiles={allFiles} store={store} indicators={indicators}/>
+        )}
+      </Scroll>
+
+      {/* Batch upload sheet */}
+      <BottomSheet open={batchOpen} onClose={()=>!batchBusy && setBatchOpen(false)}>
+        <div style={{ fontFamily:EF.display, fontWeight:700, fontSize:17, color:E.ink, marginBottom:4 }}>
+          Upload {pickedFiles.length} file{pickedFiles.length!==1?'s':''}
         </div>
-      </Card>
+        <div style={{ fontFamily:EF.body, fontSize:12.5, color:E.ink2, marginBottom:14 }}>
+          Choose which KPI indicator these documents belong to.
+        </div>
 
-      {/* Section tabs */}
-      <div className="dsu-scroll" style={{ display:'flex', gap:8, overflowX:'auto', margin:'0 -16px 14px', padding:'0 16px' }}>
-        {tabs.map(t=>(
-          <button key={t} onClick={()=>setTab(t)} style={{ ...btnReset, flexShrink:0, height:32, padding:'0 14px',
-            borderRadius:16, fontFamily:EF.body, fontWeight:600, fontSize:12.5,
-            background:tab===t?E.maroon:'#fff', color:tab===t?'#fff':E.ink2,
-            border:`1px solid ${tab===t?E.maroon:E.border}` }}>{t}</button>
-        ))}
-      </div>
+        {/* selected files preview */}
+        <div style={{ maxHeight:150, overflowY:'auto', marginBottom:14, display:'flex', flexDirection:'column', gap:7 }}>
+          {pickedFiles.map((f,n)=>{
+            const kind = getFileKindLocal(f.type), color = KIND_COLOR[kind]||KIND_COLOR.file;
+            return (
+              <div key={n} style={{ display:'flex', alignItems:'center', gap:10, background:E.surface,
+                border:`1px solid ${E.border}`, borderRadius:9, padding:'8px 10px' }}>
+                <Icon name="file" size={18} color={color}/>
+                <span style={{ flex:1, minWidth:0, fontFamily:EF.body, fontSize:12.5, color:E.ink,
+                  whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{f.name}</span>
+                <span style={{ fontFamily:EF.body, fontSize:11, color:E.ink2 }}>{formatFileSize(f.size)}</span>
+              </div>
+            );
+          })}
+        </div>
 
-      {/* One card per indicator */}
-      {list.map(k=>(
-        <IndicatorEvidenceCard key={k.code} ind={k} store={store} sections={sections}/>
-      ))}
-    </Scroll>
+        {/* indicator selector */}
+        <div style={{ fontFamily:EF.display, fontWeight:500, fontSize:13, color:E.maroon, marginBottom:6 }}>
+          Attach to indicator
+        </div>
+        <select value={batchTarget} onChange={e=>setBatchTarget(e.target.value)} disabled={batchBusy}
+          style={{ width:'100%', height:48, borderRadius:10, border:`1.5px solid ${E.border}`,
+            padding:'0 12px', fontFamily:EF.body, fontSize:14, color:E.ink, background:'#fff',
+            marginBottom:16, appearance:'menulist' }}>
+          {sections.map(sec=>(
+            <optgroup key={sec.id} label={`Section ${sec.id} — ${sec.name}`}>
+              {indicators.filter(k=>k.section===sec.id).map(k=>(
+                <option key={k.code} value={k.code}>{k.code} — {k.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+
+        <div style={{ display:'flex', gap:10 }}>
+          <SecondaryBtn onClick={()=>{ if(!batchBusy){ setBatchOpen(false); setPickedFiles([]); } }}>Cancel</SecondaryBtn>
+          <PrimaryBtn onClick={doBatchUpload} loading={batchBusy} icon={batchBusy?undefined:'upload'}>
+            {batchBusy ? 'Uploading…' : `Upload ${pickedFiles.length} file${pickedFiles.length!==1?'s':''}`}
+          </PrimaryBtn>
+        </div>
+      </BottomSheet>
+    </>
+  );
+}
+
+/* ── All Files library — flat list of every uploaded document ── */
+function AllFilesList({ allFiles, store, indicators }) {
+  if (allFiles.length === 0) {
+    return <EmptyState icon="folder" title="No Documents Yet"
+      message="Tap 'Upload Documents' above to add your first file. It will appear here."/>;
+  }
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
+      {allFiles.map((doc,idx)=>{
+        const kind = doc.kind || 'file';
+        const color = KIND_COLOR[kind] || KIND_COLOR.file;
+        const ind = indicators.find(k=>k.code===doc.kpiCode);
+        const editable = ind && ['DRAFT','RETURNED'].includes(ind.status);
+        return (
+          <div key={idx} style={{ display:'flex', alignItems:'center', gap:11, background:'#fff',
+            border:`1px solid ${E.border}`, borderRadius:12, padding:'11px 12px', boxShadow:ES.card }}>
+            <div style={{ width:40, height:40, borderRadius:9, background:color+'15',
+              border:`1px solid ${color}30`, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+              <Icon name="file" size={20} color={color}/>
+            </div>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontFamily:EF.display, fontWeight:500, fontSize:13, color:E.ink,
+                whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{doc.name}</div>
+              <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:3 }}>
+                <CodeBadge code={doc.kpiCode} color={doc.accent}/>
+                <span style={{ fontFamily:EF.body, fontSize:11, color:E.ink2,
+                  whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{doc.size} · {kind.toUpperCase()}</span>
+              </div>
+            </div>
+            {doc.url && (
+              <a href={doc.url} target="_blank" rel="noreferrer" style={{ ...btnReset }} title="Download / View">
+                <Icon name="download" size={18} color={E.maroon}/>
+              </a>
+            )}
+            {editable && (
+              <button title="Delete" style={btnReset} onClick={async()=>{
+                if (window.DSUdb?.isConnected() && doc.docId)
+                  await window.DSUdb.removeEvidence(doc.docId, store.currentUser?.full_name);
+                store.update(doc.kpiCode, { docs: ind.docs.filter((_,i)=>i!==doc.docIndex) });
+                store.toast('Document removed','info');
+              }}>
+                <Icon name="x" size={17} color={E.error}/>
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -195,39 +385,42 @@ function IndicatorEvidenceCard({ ind, store, sections }) {
   const dot      = full ? E.success : (ind.docs.length > 0 ? E.yellow : E.error);
 
   async function handleFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = ''; // allow re-selecting same file
-    if (file.size > 52428800) { store.toast('File too large — max 50 MB','error'); return; }
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    e.target.value = ''; // allow re-selecting same file(s)
 
     setUploading(true);
     if (!open) setOpen(true); // auto-expand to show progress
 
-    const kind = getFileKindLocal(file.type);
-    const size = formatFileSize(file.size);
-    let storageUrl = '';
     let entryId = ind._entryId;
+    if (window.DSUdb?.isConnected() && !entryId) {
+      await window.DSUdb.saveScore(ind.code,{score:0,value:0,remarks:''},
+        window.DSUdb.ACTIVE_PERIOD_ID, store.currentUser);
+      const fresh = await window.DSUdb.loadAllData();
+      entryId = fresh?.indicators.find(k=>k.code===ind.code)?._entryId || null;
+      if (entryId) store.update(ind.code,{_entryId:entryId});
+    }
 
-    if (window.DSUdb?.isConnected()) {
-      if (!entryId) {
-        await window.DSUdb.saveScore(ind.code,{score:0,value:0,remarks:''},
-          window.DSUdb.ACTIVE_PERIOD_ID, store.currentUser);
-        const fresh = await window.DSUdb.loadAllData();
-        if (fresh) {
-          entryId = fresh.indicators.find(k=>k.code===ind.code)?._entryId || null;
-          store.update(ind.code,{_entryId:entryId});
+    const newDocs = [...ind.docs];
+    let added = 0;
+    for (const file of files) {
+      if (file.size > 52428800) { store.toast(`${file.name} skipped — over 50 MB`,'error'); continue; }
+      const kind = getFileKindLocal(file.type);
+      const size = formatFileSize(file.size);
+      let storageUrl = '';
+      if (window.DSUdb?.isConnected()) {
+        const up = await window.DSUdb.uploadFile(file, ind.code, store.currentUser?.id);
+        if (up) {
+          storageUrl = up.url;
+          if (entryId) await window.DSUdb.addEvidence(entryId, file.name, size, kind, file.type,
+            storageUrl, store.currentUser?.id, store.currentUser?.full_name);
         }
       }
-      const up = await window.DSUdb.uploadFile(file, ind.code, store.currentUser?.id);
-      if (up) {
-        storageUrl = up.url;
-        if (entryId)
-          await window.DSUdb.addEvidence(entryId, file.name, size, kind, file.type,
-            storageUrl, store.currentUser?.id, store.currentUser?.full_name);
-      }
+      newDocs.push({ name:file.name, size, kind, url:storageUrl });
+      added++;
     }
-    store.update(ind.code,{ docs:[...ind.docs,{name:file.name, size, kind, url:storageUrl}] });
-    store.toast(`${file.name} uploaded successfully`,'success');
+    store.update(ind.code,{ docs:newDocs });
+    store.toast(`${added} file${added!==1?'s':''} uploaded`,'success');
     setUploading(false);
   }
 
@@ -236,7 +429,7 @@ function IndicatorEvidenceCard({ ind, store, sections }) {
       boxShadow:ES.card, marginBottom:11, overflow:'hidden' }}>
 
       {/* THE file input — hidden but directly in DOM, linked via htmlFor on every label */}
-      <input id={inputId} type="file" accept="*"
+      <input id={inputId} type="file" accept="*" multiple
         style={{ position:'absolute', left:'-9999px', opacity:0, width:1, height:1 }}
         onChange={handleFile}/>
 
