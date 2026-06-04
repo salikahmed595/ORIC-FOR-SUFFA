@@ -78,7 +78,7 @@ async function signIn(email, password) {
     }
     const profile = await getProfile(data.user.id);
     if (!profile) return { error: 'Account exists but profile not found. Contact admin.' };
-    await _audit(profile.full_name, 'LOGIN', 'users', data.user.id, null);
+    _audit(profile.full_name, 'LOGIN', 'users', data.user.id, null); // fire-and-forget
     return { user: data.user, profile };
   } catch (err) { return { error: err.message || 'Login failed.' }; }
 }
@@ -99,8 +99,10 @@ async function signUp(email, password, fullName, role, department) {
     });
     if (profileErr) return { error: profileErr.message };
 
-    const profile = await getProfile(data.user.id);
-    await _audit(fullName, 'LOGIN', 'users', data.user.id, { action: 'SIGNUP' });
+    // Build profile locally — skip extra round-trip getProfile after insert
+    const profile = { id:data.user.id, full_name:fullName, email,
+      role: role||'FACULTY', department: department||'' };
+    _audit(fullName, 'LOGIN', 'users', data.user.id, { action: 'SIGNUP' }); // fire-and-forget
     return { user: data.user, profile };
   } catch (err) { return { error: err.message || 'Sign up failed.' }; }
 }

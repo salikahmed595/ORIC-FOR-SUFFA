@@ -76,7 +76,7 @@ function App(){
       }
     });
 
-    // FALLBACK A: direct getSession() after 1.5 s — catches slow CDN / edge cases
+    // FALLBACK A: direct getSession() after 500 ms — catches slow CDN / edge cases
     timers.push(setTimeout(async () => {
       if (settled) return;
       const session = await window.DSUdb.getSession();
@@ -86,10 +86,10 @@ function App(){
       } else {
         settle(null);
       }
-    }, 1500));
+    }, 500));
 
-    // FALLBACK B: hard timeout — never stay on loading > 6 s
-    timers.push(setTimeout(() => settle(null), 6000));
+    // FALLBACK B: hard timeout — never stay on loading > 2.5 s
+    timers.push(setTimeout(() => settle(null), 2500));
 
     return () => { unsub?.(); timers.forEach(clearTimeout); };
   },[]);
