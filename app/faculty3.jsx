@@ -125,163 +125,186 @@ function DocCard({ doc, editable, onRename, onDelete }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   EVIDENCE HUB
+   EVIDENCE HUB — each indicator manages its own file input via
+   <label htmlFor> so file picker works on all mobile browsers
 ═══════════════════════════════════════════════════════════════ */
 function EvidenceScreen({ store }) {
-  const { indicators, sections, currentUser } = store;
-  const [tab, setTab]         = uS3('All');
-  const [open, setOpen]       = uS3(null);
-  const [uploading, setUploading] = uS3(null); // kpi code being uploaded
-  const fileInputRef = rS3(null);
-  const activeKpiRef = rS3(null);
-
+  const { indicators, sections } = store;
+  const [tab, setTab] = uS3('All');
   const tabs    = ['All', ...sections.map(s=>'Section '+s.id)];
   const list    = indicators.filter(k=> tab==='All' || k.section===tab.split(' ')[1]);
   const withAll = indicators.filter(k=>k.docs.length>=k.reqDocs.length).length;
   const totalDocs = indicators.reduce((s,k)=>s+k.docs.length,0);
 
-  function triggerUpload(kpiCode) {
-    activeKpiRef.current = kpiCode;
-    if (fileInputRef.current) { fileInputRef.current.value=''; fileInputRef.current.click(); }
-  }
+  return (
+    <Scroll>
+      {/* Step-by-step guide banner */}
+      <div style={{ background:E.maroon, color:'#fff', borderRadius:14, padding:'14px 16px', marginBottom:16 }}>
+        <div style={{ fontFamily:EF.display, fontWeight:700, fontSize:15, marginBottom:10 }}>How to upload documents</div>
+        {['Tap any indicator card below to expand it',
+          'Tap the yellow "Add Document" button inside',
+          'Choose any file — PDF, Word, Excel, images, etc.',
+          'Your document is saved and linked automatically'].map((s,i)=>(
+          <div key={i} style={{ display:'flex', gap:9, marginBottom:5, alignItems:'flex-start' }}>
+            <span style={{ width:20, height:20, borderRadius:'50%', background:'rgba(255,255,255,.2)',
+              display:'flex', alignItems:'center', justifyContent:'center',
+              fontFamily:EF.mono, fontWeight:700, fontSize:11, flexShrink:0 }}>{i+1}</span>
+            <span style={{ fontFamily:EF.body, fontSize:12.5, lineHeight:'18px', opacity:.9 }}>{s}</span>
+          </div>
+        ))}
+      </div>
 
-  async function handleFileSelected(e) {
+      {/* Summary */}
+      <Card style={{ marginBottom:14 }}>
+        <div style={{ fontFamily:EF.body, fontSize:12.5, color:E.ink, marginBottom:9 }}>
+          <b style={{ fontFamily:EF.mono }}>{withAll} of {indicators.length}</b> indicators have all required documents
+        </div>
+        <ProgressBar value={withAll} max={indicators.length}/>
+        <div style={{ fontFamily:EF.body, fontSize:11.5, color:E.ink2, marginTop:7 }}>
+          {totalDocs} document{totalDocs!==1?'s':''} total
+        </div>
+      </Card>
+
+      {/* Section tabs */}
+      <div className="dsu-scroll" style={{ display:'flex', gap:8, overflowX:'auto', margin:'0 -16px 14px', padding:'0 16px' }}>
+        {tabs.map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{ ...btnReset, flexShrink:0, height:32, padding:'0 14px',
+            borderRadius:16, fontFamily:EF.body, fontWeight:600, fontSize:12.5,
+            background:tab===t?E.maroon:'#fff', color:tab===t?'#fff':E.ink2,
+            border:`1px solid ${tab===t?E.maroon:E.border}` }}>{t}</button>
+        ))}
+      </div>
+
+      {/* One card per indicator */}
+      {list.map(k=>(
+        <IndicatorEvidenceCard key={k.code} ind={k} store={store} sections={sections}/>
+      ))}
+    </Scroll>
+  );
+}
+
+/* ── Per-indicator card — owns its own <input type="file"> ── */
+function IndicatorEvidenceCard({ ind, store, sections }) {
+  const [open, setOpen]         = uS3(false);
+  const [uploading, setUploading] = uS3(false);
+  const inputId  = 'ev-' + ind.code; // unique DOM id for label->input link
+  const sec      = sections.find(s=>s.id===ind.section);
+  const accent   = sec?.accent || E.maroon;
+  const canUpload = ['DRAFT','RETURNED'].includes(ind.status);
+  const full     = ind.docs.length >= ind.reqDocs.length;
+  const dot      = full ? E.success : (ind.docs.length > 0 ? E.yellow : E.error);
+
+  async function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const kpiCode = activeKpiRef.current;
-    const ind = indicators.find(k=>k.code===kpiCode);
-    if (!ind) return;
+    e.target.value = ''; // allow re-selecting same file
+    if (file.size > 52428800) { store.toast('File too large — max 50 MB','error'); return; }
 
-    setUploading(kpiCode);
+    setUploading(true);
+    if (!open) setOpen(true); // auto-expand to show progress
+
     const kind = getFileKindLocal(file.type);
     const size = formatFileSize(file.size);
-
     let storageUrl = '';
     let entryId = ind._entryId;
 
     if (window.DSUdb?.isConnected()) {
-      // 1. Upload file to Supabase Storage
-      const upload = await window.DSUdb.uploadFile(file, kpiCode, currentUser?.id);
-      if (upload) storageUrl = upload.url;
-
-      // 2. Ensure a score_entry exists (upsert DRAFT)
       if (!entryId) {
-        await window.DSUdb.saveScore(kpiCode, { score:0, value:0, remarks:'' },
-          window.DSUdb.ACTIVE_PERIOD_ID, currentUser);
-        // Re-fetch to get the new entry ID
+        await window.DSUdb.saveScore(ind.code,{score:0,value:0,remarks:''},
+          window.DSUdb.ACTIVE_PERIOD_ID, store.currentUser);
         const fresh = await window.DSUdb.loadAllData();
         if (fresh) {
-          const newInd = fresh.indicators.find(k=>k.code===kpiCode);
-          entryId = newInd?._entryId || null;
-          store.update(kpiCode, { _entryId: entryId });
+          entryId = fresh.indicators.find(k=>k.code===ind.code)?._entryId || null;
+          store.update(ind.code,{_entryId:entryId});
         }
       }
-
-      // 3. Save evidence_document record
-      if (entryId) {
-        await window.DSUdb.addEvidence(
-          entryId, file.name, size, kind, file.type,
-          storageUrl, currentUser?.id, currentUser?.full_name||currentUser?.name
-        );
+      const up = await window.DSUdb.uploadFile(file, ind.code, store.currentUser?.id);
+      if (up) {
+        storageUrl = up.url;
+        if (entryId)
+          await window.DSUdb.addEvidence(entryId, file.name, size, kind, file.type,
+            storageUrl, store.currentUser?.id, store.currentUser?.full_name);
       }
     }
-
-    // Update local state immediately
-    const newDoc = { name: file.name, size, kind, url: storageUrl };
-    store.update(kpiCode, { docs: [...ind.docs, newDoc] });
-    store.toast(`${file.name} uploaded`, 'success');
-    setUploading(null);
+    store.update(ind.code,{ docs:[...ind.docs,{name:file.name, size, kind, url:storageUrl}] });
+    store.toast(`${file.name} uploaded successfully`,'success');
+    setUploading(false);
   }
 
   return (
-    <>
-      {/* Hidden file input — accepts all formats */}
-      <input ref={fileInputRef} type="file" accept={KIND_ACCEPT}
-        style={{ display:'none' }} onChange={handleFileSelected}/>
+    <div style={{ background:'#fff', border:`1px solid ${E.border}`, borderRadius:14,
+      boxShadow:ES.card, marginBottom:11, overflow:'hidden' }}>
 
-      <Scroll>
-        <InstructionBanner id="evidence">Upload proof documents for each KPI indicator.
-          All file formats accepted — PDF, Word, Excel, images, and more.</InstructionBanner>
+      {/* THE file input — hidden but directly in DOM, linked via htmlFor on every label */}
+      <input id={inputId} type="file" accept="*"
+        style={{ position:'absolute', left:'-9999px', opacity:0, width:1, height:1 }}
+        onChange={handleFile}/>
 
-        {/* Section filter tabs */}
-        <div className="dsu-scroll" style={{ display:'flex', gap:8, overflowX:'auto', margin:'0 -16px 14px', padding:'0 16px' }}>
-          {tabs.map(t=>(
-            <button key={t} onClick={()=>setTab(t)} style={{ ...btnReset, flexShrink:0, height:32, padding:'0 14px',
-              borderRadius:16, fontFamily:EF.body, fontWeight:600, fontSize:12.5,
-              background:tab===t?E.maroon:'#fff', color:tab===t?'#fff':E.ink2,
-              border:`1px solid ${tab===t?E.maroon:E.border}` }}>{t}</button>
-          ))}
+      {/* Collapsed header row */}
+      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'13px 14px' }}>
+        <span style={{ width:11, height:11, borderRadius:'50%', background:dot, flexShrink:0 }}/>
+
+        {/* Tap to expand */}
+        <div onClick={()=>setOpen(!open)} style={{ flex:1, minWidth:0, cursor:'pointer' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:7 }}>
+            <CodeBadge code={ind.code} color={accent}/>
+            <span style={{ fontFamily:EF.display, fontWeight:500, fontSize:13, color:E.ink,
+              whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{ind.name}</span>
+          </div>
+          <div style={{ fontFamily:EF.body, fontSize:11, color:E.ink2, marginTop:2 }}>
+            {ind.docs.length} of {ind.reqDocs.length} doc{ind.reqDocs.length!==1?'s':''} uploaded
+            {' · '}<span style={{ color:ind.status==='APPROVED'?E.success:ind.status==='DRAFT'?E.ink3:E.maroon }}>
+              {ind.status.charAt(0)+ind.status.slice(1).toLowerCase()}
+            </span>
+          </div>
         </div>
 
-        {/* Summary card */}
-        <Card style={{ marginBottom:16 }}>
-          <div style={{ fontFamily:EF.body, fontSize:12.5, color:E.ink, marginBottom:9 }}>
-            <b style={{ fontFamily:EF.mono }}>{withAll} of {indicators.length}</b> indicators have all required documents
-          </div>
-          <ProgressBar value={withAll} max={indicators.length}/>
-          <div style={{ fontFamily:EF.body, fontSize:11.5, color:E.ink2, marginTop:8 }}>
-            {totalDocs} document{totalDocs!==1?'s':''} total
-          </div>
-        </Card>
+        {/* Review badge */}
+        {ind.review && <ReviewMini review={ind.review}/>}
 
-        {/* Indicator list */}
-        {list.map(k=>{
-          const sec  = sections.find(s=>s.id===k.section);
-          const full = k.docs.length>=k.reqDocs.length;
-          const dot  = full?E.success:(k.docs.length>0?E.yellow:E.error);
-          const expanded = open===k.code;
+        {/* Quick-upload yellow button — visible on collapsed row */}
+        {canUpload && (
+          <label htmlFor={inputId} title="Upload document"
+            style={{ display:'flex', alignItems:'center', justifyContent:'center',
+              width:34, height:34, borderRadius:9, background:E.yellow, cursor:'pointer',
+              flexShrink:0 }} onClick={e=>e.stopPropagation()}>
+            {uploading
+              ? <span className="dsu-spin" style={{ width:14, height:14, borderTopColor:E.maroonDark, borderColor:'rgba(0,0,0,.2)' }}/>
+              : <Icon name="plus" size={20} color={E.maroonDark} sw={2.6}/>}
+          </label>
+        )}
+        {ind.docs.length>0 && (
+          <span style={{ minWidth:20, height:20, padding:'0 5px', borderRadius:10, background:E.yellow,
+            color:E.maroonDark, fontFamily:EF.mono, fontWeight:700, fontSize:10,
+            display:'flex', alignItems:'center', justifyContent:'center' }}>{ind.docs.length}</span>
+        )}
 
-          return (
-            <div key={k.code} style={{ background:'#fff', border:`1px solid ${E.border}`, borderRadius:14,
-              boxShadow:ES.card, marginBottom:11, overflow:'hidden' }}>
+        <div onClick={()=>setOpen(!open)} style={{ cursor:'pointer' }}>
+          <Icon name={open?'chevD':'chevR'} size={18} color={E.ink3}/>
+        </div>
+      </div>
 
-              {/* Header row */}
-              <div onClick={()=>setOpen(expanded?null:k.code)} className="dsu-card-tap"
-                style={{ display:'flex', alignItems:'center', gap:11, padding:'13px 14px', cursor:'pointer' }}>
-                <span style={{ width:11, height:11, borderRadius:'50%', background:dot, flexShrink:0 }}/>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:7 }}>
-                    <CodeBadge code={k.code} color={sec?.accent||E.maroon}/>
-                    <span style={{ fontFamily:EF.display, fontWeight:500, fontSize:13.5, color:E.ink,
-                      whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{k.name}</span>
-                  </div>
-                  <div style={{ fontFamily:EF.body, fontSize:11.5, color:E.ink2, marginTop:3 }}>
-                    {k.docs.length} of {k.reqDocs.length} document{k.reqDocs.length!==1?'s':''} uploaded
-                  </div>
-                </div>
-                {k.docs.length>0 && (
-                  <span style={{ minWidth:22, height:22, padding:'0 6px', borderRadius:11, background:E.yellow,
-                    color:E.maroonDark, fontFamily:EF.mono, fontWeight:700, fontSize:11,
-                    display:'flex', alignItems:'center', justifyContent:'center' }}>{k.docs.length}</span>
-                )}
-                {/* Review badge */}
-                {k.review && (
-                  <ReviewMini review={k.review}/>
-                )}
-                <Icon name={expanded?'chevD':'chevR'} size={18} color={E.ink3}/>
+      {/* Expanded body */}
+      {open && (
+        <div style={{ padding:'0 14px 14px', borderTop:`1px solid ${E.border}` }}>
+
+          {/* Review block */}
+          {ind.review && (
+            <div style={{ marginTop:12, marginBottom:4 }}>
+              <ReviewBlock review={ind.review}/>
+            </div>
+          )}
+
+          {/* Required docs checklist */}
+          {ind.reqDocs.length>0 && (
+            <div style={{ background:E.yellowSoft, borderRadius:10, padding:'10px 12px', margin:'12px 0 10px' }}>
+              <div style={{ fontFamily:EF.display, fontWeight:600, fontSize:12.5, color:E.brown, marginBottom:7 }}>
+                Required documents for {ind.code}
               </div>
-
-              {/* Expanded body */}
-              {expanded && (
-                <div style={{ padding:'0 14px 14px', borderTop:`1px solid ${E.border}` }}>
-
-                  {/* Review block (if reviewed) */}
-                  {k.review && (
-                    <div style={{ marginTop:12, marginBottom:4 }}>
-                      <ReviewBlock review={k.review}/>
-                    </div>
-                  )}
-
-                  {/* Required docs checklist */}
-                  {k.reqDocs.length>0 && (
-                    <div style={{ background:E.yellowSoft, borderRadius:10, padding:'10px 12px', margin:'12px 0 10px' }}>
-                      <div style={{ fontFamily:EF.display, fontWeight:600, fontSize:12.5, color:E.brown, marginBottom:7 }}>
-                        Required documents
-                      </div>
-                      {k.reqDocs.map((d,n)=>{
-                        const have = n<k.docs.length;
-                        return (
-                          <div key={n} style={{ display:'flex', alignItems:'center', gap:8, padding:'4px 0' }}>
+              {ind.reqDocs.map((d,n)=>{
+                const have = n<ind.docs.length;
+                return (
+                  <div key={n} style={{ display:'flex', alignItems:'center', gap:8, padding:'4px 0' }}>
                             <span style={{ width:17, height:17, borderRadius:5, flexShrink:0,
                               border:`1.5px solid ${have?E.success:'#C9B27A'}`,
                               background:have?E.success:'transparent', display:'flex', alignItems:'center', justifyContent:'center' }}>
@@ -294,69 +317,63 @@ function EvidenceScreen({ store }) {
                     </div>
                   )}
 
-                  {/* Uploaded file list with edit / delete */}
-                  {k.docs.length>0 && (
-                    <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:12 }}>
-                      {k.docs.map((doc,n)=>(
-                        <DocCard key={doc.docId||n} doc={doc}
-                          editable={['DRAFT','RETURNED'].includes(k.status)}
-                          onRename={async newName=>{
-                            if (window.DSUdb?.isConnected() && doc.docId)
-                              await window.DSUdb.renameEvidence(doc.docId, newName, store.currentUser?.full_name);
-                            const newDocs = k.docs.map((d,i)=>i===n?{...d,name:newName}:d);
-                            store.update(k.code,{docs:newDocs});
-                          }}
-                          onDelete={async ()=>{
-                            if (window.DSUdb?.isConnected() && doc.docId)
-                              await window.DSUdb.removeEvidence(doc.docId, store.currentUser?.full_name);
-                            store.update(k.code,{docs:k.docs.filter((_,i)=>i!==n)});
-                            store.toast('Document removed','info');
-                          }}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Upload button */}
-                  {['DRAFT','RETURNED'].includes(k.status) && (
-                    uploading===k.code ? (
-                      <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10,
-                        border:`2px dashed ${E.maroon}`, borderRadius:14, padding:'18px',
-                        background:E.maroonTint }}>
-                        <span className="dsu-spin" style={{ borderTopColor:E.maroon, borderColor:E.border+'80' }}/>
-                        <span style={{ fontFamily:EF.display, fontWeight:600, fontSize:14, color:E.maroon }}>Uploading…</span>
-                      </div>
-                    ) : (
-                      <button onClick={()=>triggerUpload(k.code)} className="dsu-press"
-                        style={{ ...btnReset, width:'100%', flexDirection:'column', gap:5,
-                          border:`2px dashed ${E.maroon}`, borderRadius:14, background:E.maroonTint,
-                          padding:'18px 16px', justifyContent:'center' }}>
-                        <Icon name="cloud" size={28} color={E.maroon}/>
-                        <span style={{ fontFamily:EF.display, fontWeight:600, fontSize:14, color:E.maroon }}>
-                          {k.docs.length>0 ? 'Add Another Document' : 'Upload Document'}
-                        </span>
-                        <span style={{ fontFamily:EF.body, fontSize:11.5, color:E.ink2 }}>
-                          PDF, Word, Excel, Images — any format · Max 50 MB
-                        </span>
-                      </button>
-                    )
-                  )}
-
-                  {/* Read-only upload zone for submitted entries */}
-                  {!['DRAFT','RETURNED'].includes(k.status) && (
-                    <div style={{ marginTop:4 }}>
-                      <SecondaryBtn icon="clipboard" onClick={()=>store.nav('entry',{code:k.code})}>
-                        View Full Entry
-                      </SecondaryBtn>
-                    </div>
-                  )}
-                </div>
-              )}
+          {/* Uploaded docs with edit / delete */}
+          {ind.docs.length>0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:12 }}>
+              {ind.docs.map((doc,n)=>(
+                <DocCard key={doc.docId||n} doc={doc}
+                  editable={canUpload}
+                  onRename={async newName=>{
+                    if (window.DSUdb?.isConnected() && doc.docId)
+                      await window.DSUdb.renameEvidence(doc.docId, newName, store.currentUser?.full_name);
+                    store.update(ind.code,{docs:ind.docs.map((d,i)=>i===n?{...d,name:newName}:d)});
+                  }}
+                  onDelete={async()=>{
+                    if (window.DSUdb?.isConnected() && doc.docId)
+                      await window.DSUdb.removeEvidence(doc.docId, store.currentUser?.full_name);
+                    store.update(ind.code,{docs:ind.docs.filter((_,i)=>i!==n)});
+                    store.toast('Document removed','info');
+                  }}
+                />
+              ))}
             </div>
-          );
-        })}
-      </Scroll>
-    </>
+          )}
+
+          {/* Upload zone — label+htmlFor is the only mobile-safe method */}
+          {canUpload && (
+            uploading ? (
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+                border:`2px dashed ${E.maroon}`, borderRadius:14, padding:'20px', background:E.maroonTint }}>
+                <span className="dsu-spin" style={{ borderTopColor:E.maroon, borderColor:E.border+'80' }}/>
+                <span style={{ fontFamily:EF.display, fontWeight:600, fontSize:14, color:E.maroon }}>Uploading…</span>
+              </div>
+            ) : (
+              <label htmlFor={inputId} style={{ display:'block', cursor:'pointer' }}>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8,
+                  border:`2px dashed ${E.maroon}`, borderRadius:14, background:E.maroonTint, padding:'22px 16px' }}>
+                  <Icon name="cloud" size={32} color={E.maroon}/>
+                  <span style={{ fontFamily:EF.display, fontWeight:700, fontSize:15, color:E.maroon }}>
+                    {ind.docs.length > 0 ? 'Add Another Document' : 'Add Document'}
+                  </span>
+                  <span style={{ fontFamily:EF.body, fontSize:12, color:E.ink2, textAlign:'center' }}>
+                    Tap here — Any format: PDF, Word, Excel, images · Max 50 MB
+                  </span>
+                </div>
+              </label>
+            )
+          )}
+
+          {/* Read-only: submitted/approved entries */}
+          {!canUpload && (
+            <div style={{ marginTop:4 }}>
+              <SecondaryBtn icon="clipboard" onClick={()=>store.nav('entry',{code:ind.code})}>
+                View Full Entry
+              </SecondaryBtn>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
