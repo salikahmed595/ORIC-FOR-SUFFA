@@ -19,7 +19,110 @@ function formatFileSize(bytes) {
   return (bytes/1048576).toFixed(1)+' MB';
 }
 const KIND_COLOR  = { pdf:'#C62828', xls:'#2E7D32', img:'#1565C0', doc:'#1A237E', ppt:'#E65100', file:'#757575' };
-const KIND_ACCEPT = '*';   // accept all file formats
+const KIND_ACCEPT = '*';
+
+/* ── DocCard: single document row with edit (rename) + delete ── */
+function DocCard({ doc, editable, onRename, onDelete }) {
+  const [delConfirm, setDelConfirm] = uS3(false);
+  const [editing,    setEditing]    = uS3(false);
+  const [draftName,  setDraftName]  = uS3(doc.name);
+  const [saving,     setSaving]     = uS3(false);
+
+  const kind  = doc.kind || 'file';
+  const color = KIND_COLOR[kind] || KIND_COLOR.file;
+
+  async function commitRename() {
+    const n = draftName.trim();
+    if (!n || n === doc.name) { setEditing(false); return; }
+    setSaving(true);
+    await onRename(n);
+    setSaving(false);
+    setEditing(false);
+  }
+
+  /* ── delete-confirm row ── */
+  if (delConfirm) return (
+    <div style={{ display:'flex', alignItems:'center', gap:10, background:'#FFEBEE',
+      border:`1px solid #EF9A9A`, borderRadius:10, padding:'9px 11px' }}>
+      <Icon name="alert" size={17} color={E.error}/>
+      <span style={{ flex:1, fontFamily:EF.body, fontSize:12.5, color:E.error }}>
+        Delete "<b>{doc.name}</b>"?
+      </span>
+      <button onClick={async()=>{ await onDelete(); setDelConfirm(false); }}
+        style={{ ...btnReset, height:28, padding:'0 12px', borderRadius:7, background:E.error,
+          color:'#fff', fontFamily:EF.display, fontWeight:600, fontSize:12 }}>Delete</button>
+      <button onClick={()=>setDelConfirm(false)}
+        style={{ ...btnReset, height:28, padding:'0 12px', borderRadius:7, border:`1px solid ${E.border}`,
+          fontFamily:EF.display, fontWeight:600, fontSize:12, color:E.ink2 }}>Cancel</button>
+    </div>
+  );
+
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:10, background:E.surface,
+      border:`1px solid ${E.border}`, borderRadius:10, padding:'9px 11px' }}>
+
+      {/* File icon */}
+      <div style={{ width:38, height:38, borderRadius:8, background:color+'15',
+        border:`1px solid ${color}30`, display:'flex', alignItems:'center',
+        justifyContent:'center', flexShrink:0 }}>
+        <Icon name="file" size={19} color={color}/>
+      </div>
+
+      {/* Name — normal or inline edit input */}
+      {editing ? (
+        <input value={draftName} onChange={e=>setDraftName(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={e=>{ if(e.key==='Enter') commitRename(); if(e.key==='Escape'){ setEditing(false); setDraftName(doc.name); } }}
+          autoFocus disabled={saving}
+          style={{ flex:1, minWidth:0, height:30, border:`1.5px solid ${E.maroon}`, borderRadius:7,
+            padding:'0 8px', fontFamily:EF.display, fontWeight:500, fontSize:13, color:E.ink,
+            background:'#fff', outline:'none' }}/>
+      ) : (
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontFamily:EF.display, fontWeight:500, fontSize:12.5, color:E.ink,
+            whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{doc.name}</div>
+          <div style={{ fontFamily:EF.body, fontSize:11, color:E.ink2, display:'flex', gap:8 }}>
+            <span>{doc.size}</span>
+            <span style={{ color, fontWeight:600, fontSize:10 }}>{kind.toUpperCase()}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Download */}
+      {doc.url && !editing && (
+        <a href={doc.url} target="_blank" rel="noreferrer" style={{ ...btnReset }}
+          title="Download">
+          <Icon name="download" size={17} color={E.maroon}/>
+        </a>
+      )}
+
+      {/* Edit / delete — only when editable */}
+      {editable && !editing && (
+        <>
+          <button onClick={()=>{ setDraftName(doc.name); setEditing(true); }}
+            style={{ ...btnReset }} title="Rename">
+            <Icon name="edit" size={16} color={E.ink2}/>
+          </button>
+          <button onClick={()=>setDelConfirm(true)}
+            style={{ ...btnReset }} title="Delete">
+            <Icon name="x" size={16} color={E.error}/>
+          </button>
+        </>
+      )}
+
+      {/* Saving spinner or done tick */}
+      {saving ? (
+        <span className="dsu-spin" style={{ width:16, height:16, flexShrink:0,
+          borderTopColor:E.maroon, borderColor:E.border }}/>
+      ) : !editable && (
+        <span style={{ width:20, height:20, borderRadius:'50%', background:E.success,
+          display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+          <Icon name="check" size={11} color="#fff" sw={3}/>
+        </span>
+      )}
+    </div>
+  );
+}
 
 /* ═══════════════════════════════════════════════════════════════
    EVIDENCE HUB
@@ -191,40 +294,26 @@ function EvidenceScreen({ store }) {
                     </div>
                   )}
 
-                  {/* Uploaded file list */}
+                  {/* Uploaded file list with edit / delete */}
                   {k.docs.length>0 && (
                     <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:12 }}>
-                      {k.docs.map((doc,n)=>{
-                        const kind  = doc.kind || 'file';
-                        const color = KIND_COLOR[kind] || KIND_COLOR.file;
-                        return (
-                          <div key={n} style={{ display:'flex', alignItems:'center', gap:10, background:E.surface,
-                            border:`1px solid ${E.border}`, borderRadius:10, padding:'9px 11px' }}>
-                            <div style={{ width:38, height:38, borderRadius:8, background:color+'15',
-                              border:`1px solid ${color}30`, display:'flex', alignItems:'center',
-                              justifyContent:'center', flexShrink:0 }}>
-                              <Icon name="file" size={19} color={color}/>
-                            </div>
-                            <div style={{ flex:1, minWidth:0 }}>
-                              <div style={{ fontFamily:EF.display, fontWeight:500, fontSize:12.5, color:E.ink,
-                                whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{doc.name}</div>
-                              <div style={{ fontFamily:EF.body, fontSize:11, color:E.ink2, display:'flex', gap:8 }}>
-                                <span>{doc.size}</span>
-                                <span style={{ color, fontWeight:600, fontSize:10 }}>{kind.toUpperCase()}</span>
-                              </div>
-                            </div>
-                            {doc.url && (
-                              <a href={doc.url} target="_blank" rel="noreferrer" style={{ ...btnReset }}>
-                                <Icon name="download" size={17} color={E.maroon}/>
-                              </a>
-                            )}
-                            <span style={{ width:20, height:20, borderRadius:'50%', background:E.success,
-                              display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                              <Icon name="check" size={11} color="#fff" sw={3}/>
-                            </span>
-                          </div>
-                        );
-                      })}
+                      {k.docs.map((doc,n)=>(
+                        <DocCard key={doc.docId||n} doc={doc}
+                          editable={['DRAFT','RETURNED'].includes(k.status)}
+                          onRename={async newName=>{
+                            if (window.DSUdb?.isConnected() && doc.docId)
+                              await window.DSUdb.renameEvidence(doc.docId, newName, store.currentUser?.full_name);
+                            const newDocs = k.docs.map((d,i)=>i===n?{...d,name:newName}:d);
+                            store.update(k.code,{docs:newDocs});
+                          }}
+                          onDelete={async ()=>{
+                            if (window.DSUdb?.isConnected() && doc.docId)
+                              await window.DSUdb.removeEvidence(doc.docId, store.currentUser?.full_name);
+                            store.update(k.code,{docs:k.docs.filter((_,i)=>i!==n)});
+                            store.toast('Document removed','info');
+                          }}
+                        />
+                      ))}
                     </div>
                   )}
 

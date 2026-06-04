@@ -1,6 +1,6 @@
 // faculty2.jsx — Score Card hub, Section Detail, Entry Wizard
-const { useState:uS2 } = React;
-const { C:K, F:KF, SHADOW:KS, STATUS:KST, RATING:KR } = window.DSU;
+const { useState:uS2, useRef:rS2 } = React;
+const { C:K, F:KF, SHADOW:KS, STATUS:KST } = window.DSU;
 
 const sectionScore = (inds,id) => inds.filter(k=>k.section===id)
   .reduce((s,k)=>s+(k.status!=='DRAFT'?k.score:0),0);
@@ -67,7 +67,7 @@ function ScoreCardScreen({ store }) {
       </Scroll>
       <StickyBar>
         {allReady
-          ? <PrimaryBtn icon="check" onClick={()=>store.toast('Annual report submitted to your HOD!','success')}>Submit for Review</PrimaryBtn>
+          ? <SubmitAllBtn store={store} indicators={indicators}/>
           : <>
               <PrimaryBtn disabled>Complete all sections to submit</PrimaryBtn>
               <div style={{ textAlign:'center', fontFamily:KF.body, fontSize:11, color:K.ink2, marginTop:7 }}>Submission goes to your HOD, then to HEC review</div>
@@ -134,7 +134,7 @@ function SectionScreen({ store, params }) {
       <StickyBar>
         {incomplete>0
           ? <PrimaryBtn disabled>Complete {incomplete} more indicator{incomplete>1?'s':''}</PrimaryBtn>
-          : <PrimaryBtn icon="check" onClick={()=>store.toast(`Section ${sec.id} submitted for review`,'success')}>Submit Section {sec.id} for Review</PrimaryBtn>}
+          : <SubmitSectionBtn store={store} sec={sec} ks={ks}/>}
       </StickyBar>
     </>
   );
@@ -172,24 +172,113 @@ function KPICard({ k, accent, onClick }) {
   );
 }
 
+/* ── Submit-all button (ScoreCard hub) ── */
+function SubmitAllBtn({ store, indicators }) {
+  const [busy, setBusy] = uS2(false);
+  const [confirm, setConfirm] = uS2(false);
+
+  async function doSubmit() {
+    setBusy(true);
+    const pending = indicators.filter(k=>['DRAFT','RETURNED'].includes(k.status));
+    for (const ind of pending) {
+      await store.update(ind.code, { status:'SUBMITTED' });
+    }
+    setBusy(false);
+    setConfirm(false);
+    store.toast('Annual report submitted to your HOD for review!','success');
+  }
+
+  return (
+    <>
+      <PrimaryBtn icon="check" loading={busy} onClick={()=>setConfirm(true)}>Submit Annual Report</PrimaryBtn>
+      <BottomSheet open={confirm} onClose={()=>setConfirm(false)}>
+        <div style={{ textAlign:'center', marginBottom:8 }}>
+          <span style={{ width:48, height:48, borderRadius:'50%', background:K.maroon+'15',
+            display:'inline-flex', alignItems:'center', justifyContent:'center' }}>
+            <Icon name="check" size={24} color={K.maroon} sw={2.4}/>
+          </span>
+        </div>
+        <div style={{ fontFamily:KF.display, fontWeight:700, fontSize:17, color:K.ink, textAlign:'center', marginBottom:6 }}>Submit Annual Report?</div>
+        <div style={{ fontFamily:KF.body, fontSize:13, color:K.ink2, textAlign:'center', marginBottom:18 }}>
+          All remaining draft entries will be submitted to your HOD for review. You cannot edit them after submission.
+        </div>
+        <div style={{ display:'flex', gap:10 }}>
+          <SecondaryBtn onClick={()=>setConfirm(false)}>Cancel</SecondaryBtn>
+          <PrimaryBtn onClick={doSubmit} loading={busy}>Confirm Submit</PrimaryBtn>
+        </div>
+      </BottomSheet>
+    </>
+  );
+}
+
+/* ── Submit-section button ── */
+function SubmitSectionBtn({ store, sec, ks }) {
+  const [busy, setBusy] = uS2(false);
+
+  async function doSubmit() {
+    setBusy(true);
+    const pending = ks.filter(k=>['DRAFT','RETURNED'].includes(k.status));
+    for (const ind of pending) {
+      await store.update(ind.code, { status:'SUBMITTED' });
+    }
+    setBusy(false);
+    store.toast(`Section ${sec.id} submitted for review`, 'success');
+    store.back();
+  }
+
+  return <PrimaryBtn icon="check" loading={busy} onClick={doSubmit}>Submit Section {sec.id} for Review</PrimaryBtn>;
+}
+
 /* ───────── Entry Wizard (3 steps) ───────── */
 function EntryScreen({ store, params }) {
   const k = store.indicators.find(x=>x.code===params.code);
-  const sec = store.sections.find(s=>s.id===k.section);
-  const [step, setStep] = uS2(0);
-  const [value, setValue] = uS2(k.value);
-  const [score, setScore] = uS2(k.score);
+  const [step, setStep]       = uS2(0);
+  const [value, setValue]     = uS2(k.value);
+  const [score, setScore]     = uS2(k.score);
   const [remarks, setRemarks] = uS2(k.remarks);
-  const [docs, setDocs] = uS2(k.docs);
-  const [sheet, setSheet] = uS2(false);
-  const editable = ['DRAFT','RETURNED'].includes(k.status);
-  const ratio = k.denom ? (value/k.denom) : null;
-  const scoreErr = score>k.max ? `Cannot exceed maximum score of ${k.max.toFixed(1)}` : '';
-
-  function addDoc(name){ setDocs([...docs, { name, size:(Math.random()*2+0.3).toFixed(1)+' MB', kind:'pdf' }]); setSheet(false); }
+  const [docs, setDocs]       = uS2(k.docs);
+  const [sheet, setSheet]     = uS2(false);
+  const [uploading, setUploading] = uS2(false);
   const [submitting, setSubmitting] = uS2(false);
+  const fileInputRef = rS2(null);
+  const captureRef   = rS2(null);
+
+  const editable = ['DRAFT','RETURNED'].includes(k.status);
+  const ratio    = k.denom ? (value/k.denom) : null;
+  const scoreErr = score > k.max ? `Cannot exceed maximum score of ${k.max.toFixed(1)}` : '';
+
+  async function handleFile(file) {
+    if (!file) return;
+    setSheet(false);
+    if (file.size > 52428800) { store.toast('File too large — max 50 MB','error'); return; }
+    setUploading(true);
+
+    let storageUrl = '';
+    let entryId = k._entryId;
+    const kind = window.DSUdb?.getFileKind(file.type) || 'file';
+    const size = window.DSUdb?.formatSize(file.size) || '—';
+
+    if (window.DSUdb?.isConnected()) {
+      if (!entryId) {
+        await store.update(k.code, { score, value, remarks });
+        entryId = store.indicators.find(x=>x.code===k.code)?._entryId;
+      }
+      const up = await window.DSUdb.uploadFile(file, k.code, store.currentUser?.id);
+      if (up) {
+        storageUrl = up.url;
+        if (entryId) {
+          await window.DSUdb.addEvidence(entryId, file.name, size, kind, file.type,
+            storageUrl, store.currentUser?.id, store.currentUser?.full_name);
+        }
+      }
+    }
+    setDocs(prev=>[...prev, { name:file.name, size, kind, url:storageUrl }]);
+    store.toast(`${file.name} added`,'success');
+    setUploading(false);
+  }
 
   async function submit(){
+    if (scoreErr) { store.toast(scoreErr,'error'); return; }
     setSubmitting(true);
     await store.update(k.code, { value, score, remarks, docs, status:'SUBMITTED', review:null });
     setSubmitting(false);
@@ -203,6 +292,12 @@ function EntryScreen({ store, params }) {
 
   return (
     <>
+      {/* Hidden file inputs */}
+      <input ref={fileInputRef} type="file" accept="*" style={{ display:'none' }}
+        onChange={e=>handleFile(e.target.files?.[0])}/>
+      <input ref={captureRef} type="file" accept="image/*" capture="environment"
+        style={{ display:'none' }} onChange={e=>handleFile(e.target.files?.[0])}/>
+
       <AppHeader title={`${k.code} — ${k.name.split(' ').slice(0,2).join(' ')}`} onBack={store.back}
         breadcrumb={`Score Card → Section ${k.section} → ${k.code}`}/>
       <div style={{ padding:'14px 16px 4px', background:'#fff', borderBottom:`1px solid ${K.border}` }}>
@@ -219,13 +314,15 @@ function EntryScreen({ store, params }) {
           <div style={{ display:'flex', gap:8, background:K.maroonTint, borderRadius:10, padding:'10px 12px',
             marginBottom:16, alignItems:'center' }}>
             <Icon name="clock" size={17} color={K.maroon}/>
-            <span style={{ fontFamily:KF.body, fontSize:12, color:K.brown, flex:1 }}>This entry is <b>{KST[k.status].label.toLowerCase()}</b> and currently read-only.</span>
+            <span style={{ fontFamily:KF.body, fontSize:12, color:K.brown, flex:1 }}>
+              This entry is <b>{KST[k.status]?.label?.toLowerCase()||k.status}</b> and currently read-only.</span>
           </div>
         )}
 
         {step===0 && <StepScore k={k} value={value} setValue={setValue} score={score} setScore={setScore}
           remarks={remarks} setRemarks={setRemarks} ratio={ratio} scoreErr={scoreErr} editable={editable}/>}
-        {step===1 && <StepEvidence k={k} docs={docs} addDoc={()=>setSheet(true)}
+        {step===1 && <StepEvidence k={k} docs={docs} uploading={uploading}
+          addDoc={()=>setSheet(true)}
           removeDoc={i=>setDocs(docs.filter((_,n)=>n!==i))} editable={editable}/>}
         {step===2 && <StepReview k={k} value={value} score={score} remarks={remarks} docs={docs}/>}
       </Scroll>
@@ -238,12 +335,12 @@ function EntryScreen({ store, params }) {
           </>}
           {step===1 && <>
             <SecondaryBtn onClick={()=>setStep(0)}>Back</SecondaryBtn>
-            <PrimaryBtn onClick={()=>setStep(2)} icon="chevR">Review</PrimaryBtn>
+            <PrimaryBtn onClick={()=>setStep(2)} icon="chevR">Review & Submit</PrimaryBtn>
           </>}
           {step===2 && <>
             <SecondaryBtn onClick={()=>setStep(0)}>Edit</SecondaryBtn>
             {editable
-              ? <PrimaryBtn onClick={submit} icon="check">Submit to HOD</PrimaryBtn>
+              ? <PrimaryBtn onClick={submit} loading={submitting} icon="check">Submit to HOD</PrimaryBtn>
               : <PrimaryBtn disabled>Read-only</PrimaryBtn>}
           </>}
         </div>
@@ -251,11 +348,13 @@ function EntryScreen({ store, params }) {
 
       <BottomSheet open={sheet} onClose={()=>setSheet(false)}>
         <div style={{ fontFamily:KF.display, fontWeight:600, fontSize:16, color:K.ink, marginBottom:4 }}>Add a Document</div>
-        <div style={{ fontFamily:KF.body, fontSize:12.5, color:K.ink2, marginBottom:16 }}>Choose how to attach your evidence file.</div>
-        {[['camera','Take a Photo','Capture a physical document'],
-          ['file','Choose File','PDF, JPG or PNG from your device'],
-          ['folder','From Cloud Drive','Google Drive or OneDrive']].map(([ic,t,d],n)=>(
-          <button key={n} onClick={()=>addDoc(['Scanned_Document.pdf','HEC_Evidence_'+k.code+'.pdf','Cloud_Attachment.pdf'][n])}
+        <div style={{ fontFamily:KF.body, fontSize:12.5, color:K.ink2, marginBottom:16 }}>Any file format accepted — PDF, Word, Excel, images and more.</div>
+        {[
+          ['file',   'Choose File',    'Any format from your device — PDF, Word, Excel, images',  ()=>{ if(fileInputRef.current){ fileInputRef.current.value=''; fileInputRef.current.click(); } }],
+          ['camera', 'Take a Photo',   'Capture a physical document with your camera',             ()=>{ if(captureRef.current){ captureRef.current.value=''; captureRef.current.click(); } }],
+          ['folder', 'From Drive',     'Google Drive, OneDrive or Dropbox',                        ()=>{ setSheet(false); store.toast('Open your cloud app and share the file here','info'); }],
+        ].map(([ic,t,d,fn],n)=>(
+          <button key={n} onClick={fn}
             style={{ ...btnReset, width:'100%', gap:13, padding:'13px 4px', borderTop:n?`1px solid ${K.border}`:'none' }}>
             <span style={{ width:40, height:40, borderRadius:10, background:K.maroonTint, display:'flex',
               alignItems:'center', justifyContent:'center' }}><Icon name={ic} size={20} color={K.maroon}/></span>
@@ -329,32 +428,71 @@ function StepperBtn({ icon, onClick }) {
   );
 }
 
-function StepEvidence({ k, docs, addDoc, removeDoc, editable }) {
+function StepEvidence({ k, docs, addDoc, removeDoc, editable, uploading }) {
   const uploaded = docs.length, need = k.reqDocs.length;
+  const kindColor = { pdf:'#C62828', xls:'#2E7D32', img:'#1565C0', doc:'#1A237E', ppt:'#E65100', file:'#757575' };
   return (
     <div>
+      {/* Required docs checklist */}
       <div style={{ background:K.yellowSoft, borderRadius:12, padding:14, marginBottom:16 }}>
-        <div style={{ fontFamily:KF.display, fontWeight:600, fontSize:14, color:K.brown, marginBottom:10 }}>Documents Required for {k.code}</div>
+        <div style={{ fontFamily:KF.display, fontWeight:600, fontSize:14, color:K.brown, marginBottom:10 }}>Required Documents — {k.code}</div>
         {k.reqDocs.map((d,n)=>{
           const have = n<uploaded;
           return (
             <div key={n} style={{ display:'flex', alignItems:'center', gap:9, padding:'6px 0' }}>
               <span style={{ width:18, height:18, borderRadius:5, border:`1.5px solid ${have?K.success:'#C9B27A'}`,
                 background:have?K.success:'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
-                {have && <Icon name="check" size={11} color="#fff" sw={3}/>}</span>
+                {have && <Icon name="check" size={11} color="#fff" sw={3}/>}
+              </span>
               <span style={{ fontFamily:KF.body, fontSize:12.5, color:K.brown, flex:1 }}>{d}</span>
             </div>
           );
         })}
-        <div style={{ marginTop:10 }}><ProgressBar value={uploaded} max={need} color={K.yellow} track="#EBD9A8"/></div>
-        <div style={{ fontFamily:KF.body, fontSize:11.5, color:K.brown, marginTop:6 }}>{Math.min(uploaded,need)} of {need} required documents uploaded</div>
+        <div style={{ marginTop:10 }}><ProgressBar value={uploaded} max={Math.max(need,1)} color={K.yellow} track="#EBD9A8"/></div>
+        <div style={{ fontFamily:KF.body, fontSize:11.5, color:K.brown, marginTop:6 }}>
+          {Math.min(uploaded,need)} of {need} required documents uploaded</div>
       </div>
 
-      {docs.length>0 && <div style={{ display:'flex', flexDirection:'column', gap:9, marginBottom:14 }}>
-        {docs.map((f,n)=>(<FileItem key={n} file={f} onRemove={editable?()=>removeDoc(n):undefined}/>))}
-      </div>}
+      {/* Uploaded file list */}
+      {docs.length>0 && (
+        <div style={{ display:'flex', flexDirection:'column', gap:9, marginBottom:14 }}>
+          {docs.map((f,n)=>{
+            const kind  = f.kind || 'file';
+            const color = kindColor[kind] || '#757575';
+            return (
+              <div key={n} style={{ display:'flex', alignItems:'center', gap:10, background:K.surface,
+                border:`1px solid ${K.border}`, borderRadius:10, padding:'9px 11px' }}>
+                <div style={{ width:36, height:36, borderRadius:8, background:color+'15',
+                  display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
+                  <Icon name="file" size={18} color={color}/>
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontFamily:KF.display, fontWeight:500, fontSize:12.5, color:K.ink,
+                    whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{f.name}</div>
+                  <div style={{ fontFamily:KF.body, fontSize:11, color:K.ink2 }}>{f.size} · <span style={{ color, fontWeight:600, fontSize:10 }}>{kind.toUpperCase()}</span></div>
+                </div>
+                {f.url && <a href={f.url} target="_blank" rel="noreferrer" style={{ ...btnReset }}>
+                  <Icon name="download" size={16} color={K.maroon}/></a>}
+                {editable && <button onClick={()=>removeDoc(n)} style={btnReset} title="Remove">
+                  <Icon name="x" size={16} color={K.error}/></button>}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-      {editable && <FileUploadZone onAdd={addDoc} label={docs.length?'Add Another Document':'Tap to Add Document'}/>}
+      {/* Upload zone */}
+      {editable && (
+        uploading ? (
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+            border:`2px dashed ${K.maroon}`, borderRadius:14, padding:'20px', background:K.maroonTint }}>
+            <span className="dsu-spin" style={{ borderTopColor:K.maroon, borderColor:K.border+'80' }}/>
+            <span style={{ fontFamily:KF.display, fontWeight:600, fontSize:14, color:K.maroon }}>Uploading…</span>
+          </div>
+        ) : (
+          <FileUploadZone onAdd={addDoc} label={docs.length?'Add Another Document':'Tap to Add Document'}/>
+        )
+      )}
     </div>
   );
 }

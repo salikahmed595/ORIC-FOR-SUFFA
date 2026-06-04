@@ -153,7 +153,7 @@ async function loadAllData(periodId = ACTIVE_PERIOD_ID) {
       const entry  = entries.find(e => e.kpi_code === ind.code) || {};
       const docs   = evidence.filter(ev => ev.score_entry_id === entry.id)
         .map(ev => ({ name: ev.file_name, size: ev.file_size, kind: ev.file_kind || 'pdf',
-          url: ev.storage_url || '', reviewId: ev.id }));
+          url: ev.storage_url || '', docId: ev.id }));  // docId = evidence_documents.id
       const review = reviews.find(rv => rv.score_entry_id === entry.id);
       return {
         code: ind.code, section: ind.category_id, name: ind.name,
@@ -257,6 +257,19 @@ async function removeEvidence(evidenceId, userName) {
   } catch { return false; }
 }
 
+async function renameEvidence(evidenceId, newName, userName) {
+  const db = getDB();
+  if (!db) return false;
+  try {
+    const { error } = await db.from('evidence_documents')
+      .update({ file_name: newName })
+      .eq('id', evidenceId);
+    if (error) return false;
+    await _audit(userName || 'User', 'EDIT', 'evidence_documents', evidenceId, { newName });
+    return true;
+  } catch { return false; }
+}
+
 /* ══════════════════════════════════════════════════════════════
    REVIEW — admin rates a score entry
 ══════════════════════════════════════════════════════════════ */
@@ -336,7 +349,7 @@ window.DSUdb = {
   // data
   loadAllData, saveScore,
   // files
-  uploadFile, addEvidence, removeEvidence, getFileKind, formatSize,
+  uploadFile, addEvidence, removeEvidence, renameEvidence, getFileKind, formatSize,
   // reviews
   saveReview,
   // admin

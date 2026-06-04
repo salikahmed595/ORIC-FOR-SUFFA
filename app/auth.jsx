@@ -1,7 +1,7 @@
 // auth.jsx — Real Supabase Auth: Login + Signup screens
 // Loaded after faculty1.jsx so InputField is available
 const { useState:uAuth } = React;
-const { C:AU, F:AUF, SHADOW:AUS } = window.DSU;
+const { C:AU, F:AUF } = window.DSU;
 
 /* ─── Role options ─── */
 const ROLE_OPTIONS = [
@@ -19,22 +19,38 @@ function AuthScreen({ onAuth }) {
   return <RealLoginScreen onAuth={onAuth} onSignup={()=>setMode('signup')}/>;
 }
 
+/* ─── Shared validators ─── */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function validateEmail(e) { return EMAIL_RE.test(e.trim()); }
+function validatePassword(p) {
+  if (p.length < 8)                         return 'Password must be at least 8 characters.';
+  if (!/[A-Z]/.test(p))                     return 'Password must contain at least one uppercase letter.';
+  if (!/[0-9]/.test(p))                     return 'Password must contain at least one number.';
+  return '';
+}
+
 /* ─── Login Screen ─── */
 function RealLoginScreen({ onAuth, onSignup }) {
-  const [email, setEmail]   = uAuth('');
-  const [pw, setPw]         = uAuth('');
-  const [showPw, setShowPw] = uAuth(false);
+  const [email, setEmail]     = uAuth('');
+  const [pw, setPw]           = uAuth('');
+  const [showPw, setShowPw]   = uAuth(false);
   const [loading, setLoading] = uAuth(false);
-  const [error, setError]   = uAuth('');
+  const [error, setError]     = uAuth('');
+  const [attempts, setAttempts] = uAuth(0);
 
   async function handleLogin() {
-    if (!email || !pw) { setError('Please fill in all fields.'); return; }
+    if (!email.trim() || !pw) { setError('Please fill in all fields.'); return; }
+    if (!validateEmail(email))   { setError('Please enter a valid email address.'); return; }
+    // Soft rate-limit: warn after 5 failed attempts in the same session
+    if (attempts >= 5) { setError('Too many failed attempts. Please wait a few minutes.'); return; }
     setLoading(true); setError('');
     const result = await window.DSUdb.signIn(email.trim().toLowerCase(), pw);
     if (result.error) {
+      setAttempts(a=>a+1);
       setError(result.error);
       setLoading(false);
     } else {
+      setAttempts(0);
       onAuth(result.user, result.profile);
     }
   }
@@ -111,11 +127,11 @@ function SignupScreen({ onAuth, onLogin }) {
   const [step, setStep]       = uAuth(0); // 0 = account info, 1 = role & dept
 
   function validateStep0() {
-    if (!name.trim())              return 'Please enter your full name.';
-    if (!email.trim())             return 'Please enter your email address.';
-    if (!email.includes('@'))      return 'Please enter a valid email address.';
-    if (pw.length < 6)             return 'Password must be at least 6 characters.';
-    if (pw !== pw2)                return 'Passwords do not match.';
+    if (!name.trim())           return 'Please enter your full name.';
+    if (!validateEmail(email))  return 'Please enter a valid email address.';
+    const pwErr = validatePassword(pw);
+    if (pwErr)                  return pwErr;
+    if (pw !== pw2)             return 'Passwords do not match.';
     return '';
   }
 
@@ -184,7 +200,9 @@ function SignupScreen({ onAuth, onLogin }) {
             <InputField label="Email Address" value={email} onChange={v=>{setEmail(v);setError('');}}
               placeholder="your@dsu.edu.pk" icon="user" type="email" autoCaps="none"/>
             <InputField label="Password" value={pw} onChange={v=>{setPw(v);setError('');}}
-              placeholder="Min. 6 characters" type={showPw?'text':'password'} icon="shield"
+              placeholder="Min. 8 chars, 1 uppercase, 1 number"
+              type={showPw?'text':'password'} icon="shield"
+              helper="At least 8 characters, one uppercase letter, one number"
               rightSlot={<button style={btnReset} onClick={()=>setShowPw(!showPw)}>
                 <Icon name="eye" size={18} color={showPw?AU.maroon:AU.ink3}/></button>}/>
             <InputField label="Confirm Password" value={pw2} onChange={v=>{setPw2(v);setError('');}}
