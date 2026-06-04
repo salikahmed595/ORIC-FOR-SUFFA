@@ -42,36 +42,56 @@ function App(){
   const [secs, setSecs]             = uA(()=>window.DSUData.SECTIONS);
   const toastTimer = rA(null);
 
-  // ── Bootstrap: auth-state listener + Supabase data load ─────
+  // ── Bootstrap ────────────────────────────────────────────────
   eA(()=>{
     if (!window.DSUdb) { setMode('auth'); return; }
 
-    // Load live data in background (non-blocking)
+    let settled = false;
+    const timers = [];
+
+    function settle(profile) {
+      if (settled) return;
+      settled = true;
+      timers.forEach(clearTimeout);
+      if (profile) _applyProfile(profile);
+      else setMode('auth');
+    }
+
+    // Load live DB data in background (non-blocking, runs regardless of auth)
     window.DSUdb.ping().then(online => {
       setDbOnline(online);
-      if (online) {
-        window.DSUdb.loadAllData().then(result => {
-          if (result) { setInds(result.indicators); setSecs(result.sections); }
-        });
-      }
+      if (online) window.DSUdb.loadAllData().then(r => {
+        if (r) { setInds(r.indicators); setSecs(r.sections); }
+      });
     });
 
-    // Auth-state listener fires immediately with INITIAL_SESSION if a
-    // stored session exists — this is how session survives page refresh.
-    const unsub = window.DSUdb.onAuthChange(async (event, session) => {
-      if (session && session.user) {
+    // PRIMARY: onAuthStateChange fires INITIAL_SESSION immediately on load
+    const unsub = window.DSUdb.onAuthChange(async (_event, session) => {
+      if (settled) return;
+      if (session?.user) {
         const profile = await window.DSUdb.getProfile(session.user.id);
-        if (profile) { _applyProfile(profile); }
-        else         { setMode('auth'); }         // account exists but no profile yet
-      } else if (event === 'SIGNED_OUT' || (!session && event !== 'INITIAL_SESSION')) {
-        setCurrentUser(null);
-        setMode('auth');
+        settle(profile || null);
+      } else {
+        settle(null);
       }
-      // If event === 'INITIAL_SESSION' with no session → go to auth
-      if (event === 'INITIAL_SESSION' && !session) setMode('auth');
     });
 
-    return unsub; // cleanup on unmount
+    // FALLBACK A: direct getSession() after 1.5 s — catches slow CDN / edge cases
+    timers.push(setTimeout(async () => {
+      if (settled) return;
+      const session = await window.DSUdb.getSession();
+      if (session?.user) {
+        const profile = await window.DSUdb.getProfile(session.user.id);
+        settle(profile || null);
+      } else {
+        settle(null);
+      }
+    }, 1500));
+
+    // FALLBACK B: hard timeout — never stay on loading > 6 s
+    timers.push(setTimeout(() => settle(null), 6000));
+
+    return () => { unsub?.(); timers.forEach(clearTimeout); };
   },[]);
 
   function _applyProfile(profile) {

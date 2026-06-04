@@ -15,7 +15,7 @@ function getDB() {
         persistSession:    true,   // store session in localStorage
         autoRefreshToken:  true,   // silently refresh before expiry
         detectSessionInUrl:false,
-        storageKey:        'dsu-oric-session',
+        // no custom storageKey — use Supabase default so saved sessions are found
       },
     });
   }
