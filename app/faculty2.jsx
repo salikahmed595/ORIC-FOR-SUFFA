@@ -187,12 +187,19 @@ function EntryScreen({ store, params }) {
   const scoreErr = score>k.max ? `Cannot exceed maximum score of ${k.max.toFixed(1)}` : '';
 
   function addDoc(name){ setDocs([...docs, { name, size:(Math.random()*2+0.3).toFixed(1)+' MB', kind:'pdf' }]); setSheet(false); }
-  function submit(){
-    store.update(k.code, { value, score, remarks, docs, status:'SUBMITTED', review:null });
+  const [submitting, setSubmitting] = uS2(false);
+
+  async function submit(){
+    setSubmitting(true);
+    await store.update(k.code, { value, score, remarks, docs, status:'SUBMITTED', review:null });
+    setSubmitting(false);
     store.back();
-    store.toast(`${k.code} submitted for review!`,'success');
+    store.toast(`${k.code} submitted for HOD review!`, 'success');
   }
-  function saveDraft(){ store.update(k.code,{ value, score, remarks, docs }); store.toast('Saved as draft','info'); }
+  async function saveDraft(){
+    await store.update(k.code, { value, score, remarks, docs });
+    store.toast('Saved as draft', 'info');
+  }
 
   return (
     <>

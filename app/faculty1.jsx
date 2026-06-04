@@ -214,9 +214,9 @@ function DashboardScreen({ store }) {
       {/* greeting */}
       <div style={{ background:`linear-gradient(135deg, ${CC.maroon}, ${CC.maroonDark})`, borderRadius:16,
         padding:'18px 18px 20px', color:'#fff', marginBottom:18, boxShadow:SH.fab }}>
-        <div style={{ fontFamily:FF.display, fontWeight:700, fontSize:20 }}>Good morning, Ahmed 👋</div>
+        <div style={{ fontFamily:FF.display, fontWeight:700, fontSize:20 }}>{timeGreeting(store.user.name)} 👋</div>
         <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
-          <span style={pill('#fff', CC.maroon)}>Faculty Member</span>
+          <span style={pill('#fff', CC.maroon)}>{store.user.roleLabel||'Faculty Member'}</span>
           <span style={pill(CC.yellow, CC.maroonDark)}>AY 2024–2025 · ACTIVE</span>
         </div>
       </div>
@@ -326,4 +326,13 @@ function ActionCard({ stripe, icon, title, sub, value, max, cta, onClick }) {
   );
 }
 
-Object.assign(window, { InputField, LoginScreen, OnboardingScreen, DashboardScreen, ImgPlaceholder, SectionTitle, pill });
+function timeGreeting(fullName) {
+  const h = new Date().getHours();
+  const greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const parts  = (fullName||'').trim().split(/\s+/);
+  const titles = ['dr.','prof.','mr.','mrs.','ms.','sir','engr.'];
+  const first  = (titles.includes((parts[0]||'').toLowerCase()) ? parts[1] : parts[0]) || parts[0] || 'there';
+  return `${greet}, ${first}`;
+}
+
+Object.assign(window, { InputField, LoginScreen, OnboardingScreen, DashboardScreen, ImgPlaceholder, SectionTitle, pill, timeGreeting });

@@ -297,7 +297,71 @@ function ReportsScreen({ store }) {
     { ic:'shield', c:E.success,t:'University Score Card',     d:'Official HEC submission format — full score card',         role:['review'] },
   ].filter(r=>r.role.includes(store.user.role));
 
-  function generate(name){ setGen('loading'); setTimeout(()=>setGen(name), 1400); }
+  function buildReportHTML(reportTitle) {
+    const { indicators, sections, user } = store;
+    const total = indicators.reduce((a,k)=>a+(k.status!=='DRAFT'?k.score:0),0);
+    const cat   = total>=80?'W':total>=60?'X':total>=40?'Y':'Non-Complying';
+    const catColor = total>=80?'#2E7D32':total>=60?'#1565C0':total>=40?'#E65100':'#D32F2F';
+    const sRows = sections.map(s=>{
+      const sc = indicators.filter(k=>k.section===s.id).reduce((a,k)=>a+(k.status!=='DRAFT'?k.score:0),0);
+      return `<tr><td style="padding:8px 12px;border-bottom:1px solid #f0f0f0">${s.id}. ${s.name}</td><td style="padding:8px 12px;border-bottom:1px solid #f0f0f0;font-weight:700;font-family:monospace;color:#6B1A1A;text-align:right">${sc}/${s.max}</td></tr>`;
+    }).join('');
+    const iRows = indicators.filter(k=>k.status!=='DRAFT').map(k=>{
+      const sColor={APPROVED:'#2E7D32',SUBMITTED:'#1565C0',UNDER_REVIEW:'#E65100',REJECTED:'#D32F2F',RETURNED:'#F57F17'}[k.status]||'#757575';
+      return `<tr><td style="padding:7px 10px;border-bottom:1px solid #f5f5f5;font-family:monospace;font-weight:700;color:#6B1A1A">${k.code}</td><td style="padding:7px 10px;border-bottom:1px solid #f5f5f5">${k.name}</td><td style="padding:7px 10px;border-bottom:1px solid #f5f5f5;text-align:center">${k.max}</td><td style="padding:7px 10px;border-bottom:1px solid #f5f5f5;text-align:center;font-family:monospace;font-weight:700">${k.score}</td><td style="padding:7px 10px;border-bottom:1px solid #f5f5f5;text-align:center;font-family:monospace">${k.hecScore!==null?k.hecScore:'—'}</td><td style="padding:7px 10px;border-bottom:1px solid #f5f5f5;font-size:11px;font-weight:700;color:${sColor}">${k.status}</td></tr>`;
+    }).join('');
+    const dateStr = new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>DSU ORIC Score Card — ${period}</title><style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;margin:0;padding:24px;color:#1a1a1a;font-size:13px}@media print{body{padding:8px}}</style></head><body>
+<div style="background:#6B1A1A;color:#fff;border-radius:8px;padding:20px;margin-bottom:20px;display:flex;align-items:center;gap:16px">
+<div style="background:#fff;border-radius:6px;padding:6px;width:56px;height:56px;display:flex;align-items:center;justify-content:center;flex-shrink:0"><div style="width:40px;height:40px;background:#6B1A1A;border-radius:4px;display:flex;align-items:center;justify-content:center;color:#F5C518;font-weight:900;font-size:18px">DSU</div></div>
+<div><div style="font-size:18px;font-weight:700">DHA Suffa University — ORIC Score Card</div><div style="opacity:.85;margin-top:4px">Period: ${period} &nbsp;·&nbsp; ${reportTitle}</div><div style="opacity:.7;margin-top:2px;font-size:12px">Prepared for: ${user.name||'—'} (${user.roleLabel||'—'}) &nbsp;·&nbsp; Generated: ${dateStr}</div></div></div>
+<div style="display:flex;gap:12px;margin-bottom:20px">
+<div style="flex:1;border:2px solid #6B1A1A;border-radius:8px;padding:16px;text-align:center"><div style="font-size:36px;font-weight:700;color:#6B1A1A">${total}</div><div style="color:#666;margin-top:4px">Total Score / 100</div><div style="display:inline-block;background:#F5C518;color:#4A1010;padding:3px 12px;border-radius:10px;font-weight:700;font-size:13px;margin-top:8px">Category ${cat}</div></div>
+${sections.map(s=>{const sc=indicators.filter(k=>k.section===s.id).reduce((a,k)=>a+(k.status!=='DRAFT'?k.score:0),0);return`<div style="flex:1;border:1px solid #e0e0e0;border-radius:8px;padding:12px;text-align:center"><div style="font-size:22px;font-weight:700;color:${['#6B1A1A','#1565C0','#2E7D32','#E65100'][['A','B','C','D'].indexOf(s.id)]}">${sc}/${s.max}</div><div style="color:#888;font-size:11px;margin-top:4px">Section ${s.id}<br/>${s.name}</div></div>`;}).join('')}
+</div>
+<table style="width:100%;border-collapse:collapse;margin-bottom:20px"><thead><tr style="background:#6B1A1A;color:#fff"><td style="padding:8px 12px">Section Summary</td><td style="padding:8px 12px;text-align:right">Score</td></tr></thead><tbody>${sRows}</tbody><tfoot><tr style="background:#f5f5f5"><td style="padding:10px 12px;font-weight:700">TOTAL</td><td style="padding:10px 12px;font-weight:700;font-family:monospace;color:#6B1A1A;text-align:right">${total} / 100</td></tr></tfoot></table>
+<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#333;color:#fff"><td style="padding:8px 10px">Code</td><td style="padding:8px 10px">Indicator</td><td style="padding:8px 10px;text-align:center">Max</td><td style="padding:8px 10px;text-align:center">Self</td><td style="padding:8px 10px;text-align:center">HEC</td><td style="padding:8px 10px">Status</td></tr></thead><tbody>${iRows||'<tr><td colspan="6" style="padding:16px;text-align:center;color:#999">No submitted indicators yet</td></tr>'}</tbody></table>
+<div style="text-align:center;margin-top:20px;color:#aaa;font-size:11px">DSU ORIC Performance Management System &nbsp;·&nbsp; HEC ORIC Policy 2021 &nbsp;·&nbsp; Confidential</div>
+</body></html>`;
+  }
+
+  function doDownload(reportTitle) {
+    const html = buildReportHTML(reportTitle);
+    const blob = new Blob([html], { type:'text/html;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `DSU_ORIC_${reportTitle.replace(/\s+/g,'_')}_${period.replace(/[–—]/g,'-')}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    store.toast('Report downloaded — open the file to view or print as PDF', 'success');
+  }
+
+  function doPrint(reportTitle) {
+    const html = buildReportHTML(reportTitle);
+    const w = window.open('', '_blank', 'width=900,height=700');
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(()=>{ w.print(); }, 600);
+  }
+
+  async function doShare(reportTitle) {
+    if (navigator.share) {
+      try {
+        const html = buildReportHTML(reportTitle);
+        const blob = new Blob([html], { type:'text/html' });
+        const file = new File([blob], `DSU_ORIC_Report_${period}.html`, { type:'text/html' });
+        await navigator.share({ title:'DSU ORIC Score Card', files:[file] });
+      } catch { store.toast('Share cancelled','info'); }
+    } else {
+      doPrint(reportTitle);
+    }
+  }
+
+  function generate(name){ setGen('loading'); setTimeout(()=>setGen(name), 900); }
 
   if (gen && gen!=='loading') {
     return (
@@ -333,8 +397,8 @@ function ReportsScreen({ store }) {
         </Scroll>
         <StickyBar>
           <div style={{ display:'flex', gap:10 }}>
-            {[['download','Download'],['share','Share'],['print','Print']].map(([ic,l])=>(
-              <button key={l} onClick={()=>store.toast(l+' started','success')} className="dsu-press"
+            {[['download','Download',()=>doDownload(gen)],['share','Share',()=>doShare(gen)],['print','Print',()=>doPrint(gen)]].map(([ic,l,fn])=>(
+              <button key={l} onClick={fn} className="dsu-press"
                 style={{ ...btnReset, flex:1, flexDirection:'column', gap:5, padding:'10px 0',
                   borderRadius:12, border:`1.5px solid ${E.maroon}`, justifyContent:'center' }}>
                 <Icon name={ic} size={20} color={E.maroon}/>
