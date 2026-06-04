@@ -101,12 +101,6 @@ function LoginScreen({ store }) {
             {loading?'Signing you in…':(role==='faculty'?'Login to My Account':'Login as Reviewer')}
           </PrimaryBtn>
 
-          <div style={{ display:'flex', alignItems:'center', gap:10, margin:'18px 0' }}>
-            <div style={{ flex:1, height:1, background:CC.border }}/>
-            <span style={{ fontFamily:FF.body, fontSize:12, color:CC.ink3 }}>or</span>
-            <div style={{ flex:1, height:1, background:CC.border }}/>
-          </div>
-          <SecondaryBtn icon="eye" onClick={()=>store.toast('Biometric demo — tap Login instead','info')}>Use Fingerprint / Face ID</SecondaryBtn>
         </div>
 
         <div style={{ flex:1 }}/>

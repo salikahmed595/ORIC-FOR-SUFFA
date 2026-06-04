@@ -1,4 +1,4 @@
-// app.jsx — root: Supabase bootstrap, state store, splash, router, tweaks
+// app.jsx — root: real Supabase auth, state store, splash, router, tweaks
 const { useState:uA, useEffect:eA, useRef:rA } = React;
 const A = window.DSU;
 
@@ -14,10 +14,11 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "tips": true
 }/*EDITMODE-END*/;
 
-const USERS = {
-  faculty: { name:'Dr. Ahmed Raza', role:'faculty', roleLabel:'Faculty Member', dept:'Dept. of Computer Science · DSU', initials:'AR' },
-  review:  { name:'HEC Reviewer',   role:'review',  roleLabel:'HEC / ORIC Admin', dept:'Higher Education Commission', initials:'HR' },
-};
+// Map Supabase profile role → app view mode
+const ADMIN_ROLES = ['HOD','DEAN','ORIC_HEAD','UNIVERSITY_ADMIN','SUPER_ADMIN','AUDITOR'];
+function getAppRole(profileRole) {
+  return ADMIN_ROLES.includes(profileRole) ? 'review' : 'faculty';
+}
 
 function App(){
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -28,36 +29,57 @@ function App(){
   A.C.secA = t.primary;
   A.tipsOff = !t.tips;
 
-  const [mode, setMode] = uA('splash');
-  const [role, setRole] = uA('faculty');
-  const [tab, setTab] = uA('home');
-  const [stack, setStack] = uA([]);
-  const [toast, setToast] = uA(null);
+  // mode: 'loading' | 'auth' | 'onboarding' | 'app'
+  const [mode, setMode]             = uA('loading');
+  const [currentUser, setCurrentUser] = uA(null);   // { id, full_name, email, role, department }
+  const [role, setRole]             = uA('faculty'); // 'faculty' | 'review'
+  const [tab, setTab]               = uA('home');
+  const [stack, setStack]           = uA([]);
+  const [toast, setToast]           = uA(null);
   const [seenOnboard, setSeenOnboard] = uA(false);
-  const [dbOnline, setDbOnline] = uA(false);
-  // Initialise from static seed; Supabase data overwrites on connect
-  const [inds, setInds] = uA(()=>JSON.parse(JSON.stringify(window.DSUData.INDICATORS)));
-  const [secs, setSecs] = uA(()=>window.DSUData.SECTIONS);
+  const [dbOnline, setDbOnline]     = uA(false);
+  const [inds, setInds]             = uA(()=>JSON.parse(JSON.stringify(window.DSUData.INDICATORS)));
+  const [secs, setSecs]             = uA(()=>window.DSUData.SECTIONS);
   const toastTimer = rA(null);
 
-  // ── Bootstrap: ping Supabase then load live data ──────────
+  // ── Bootstrap: check existing session, ping Supabase ────────
   eA(()=>{
-    const splashTimer = setTimeout(()=>setMode('login'), 2100);
-    if (window.DSUdb) {
-      window.DSUdb.ping().then(online => {
-        setDbOnline(online);
-        if (online) {
-          window.DSUdb.loadAllData().then(result => {
-            if (result) {
-              setInds(result.indicators);
-              setSecs(result.sections);
-            }
-          });
+    async function init() {
+      if (!window.DSUdb) { setMode('auth'); return; }
+      const online = await window.DSUdb.ping();
+      setDbOnline(online);
+
+      if (online) {
+        // Load live DB data over static seed
+        const result = await window.DSUdb.loadAllData();
+        if (result) { setInds(result.indicators); setSecs(result.sections); }
+
+        // Check if user already has a session
+        const session = await window.DSUdb.getSession();
+        if (session) {
+          const profile = await window.DSUdb.getProfile(session.user.id);
+          if (profile) {
+            _applyProfile(profile);
+            return;
+          }
         }
-      });
+      }
+      setMode('auth');
     }
-    return ()=>clearTimeout(splashTimer);
+    init();
   },[]);
+
+  function _applyProfile(profile) {
+    setCurrentUser(profile);
+    const appRole = getAppRole(profile.role);
+    setRole(appRole);
+    if (appRole === 'faculty' && !seenOnboard) setMode('onboarding');
+    else setMode('app');
+  }
+
+  function handleAuth(user, profile) {
+    _applyProfile(profile);
+  }
 
   function fireToast(msg, type='success'){
     setToast({ msg, type, key:Date.now() });
@@ -65,30 +87,46 @@ function App(){
     toastTimer.current = setTimeout(()=>setToast(null), 2800);
   }
 
-  // ── Store.update syncs both local state AND Supabase ──────
-  async function updateIndicator(code, patch){
+  async function updateIndicator(code, patch) {
     setInds(list=>list.map(k=>k.code===code?{...k,...patch}:k));
     if (window.DSUdb && dbOnline) {
-      await window.DSUdb.saveScore(code, patch);
+      await window.DSUdb.saveScore(code, patch, window.DSUdb.ACTIVE_PERIOD_ID, currentUser);
     }
   }
 
+  async function handleLogout() {
+    if (window.DSUdb) await window.DSUdb.signOut();
+    setCurrentUser(null);
+    setStack([]);
+    setTab('home');
+    setMode('auth');
+  }
+
+  // Build user object for store from real profile
+  const storeUser = currentUser ? {
+    name:      currentUser.full_name,
+    email:     currentUser.email,
+    role:      role,
+    roleLabel: currentUser.role.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()),
+    dept:      currentUser.department || 'DHA Suffa University',
+    initials:  currentUser.full_name.trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase(),
+    id:        currentUser.id,
+    dbRole:    currentUser.role,
+  } : { name:'Guest', role, roleLabel:'Guest', dept:'DSU', initials:'GU' };
+
   const store = {
-    user: USERS[role], role, indicators:inds, sections:secs, activeTab:tab,
-    dbOnline,
-    login(r){ setRole(r); setStack([]); setTab('home');
-      if (r==='faculty' && !seenOnboard) setMode('onboarding'); else setMode('app'); },
-    finishOnboarding(){ setSeenOnboard(true); setMode('app'); },
-    logout(){ setMode('login'); setStack([]); setTab('home'); },
-    nav(screen, params){ setStack(s=>[...s, {screen, params}]); },
+    user: storeUser, role, indicators:inds, sections:secs, activeTab:tab,
+    dbOnline, currentUser,
+    nav(screen, params){ setStack(s=>[...s,{screen,params}]); },
     back(){ setStack(s=>s.slice(0,-1)); },
     setTab(id){ setStack([]); setTab(id); },
     toast: fireToast,
     update: updateIndicator,
+    logout: handleLogout,
   };
 
   let sbBg=A.C.maroon, sbFg='#fff';
-  if (mode==='splash'||mode==='login'){ sbBg='#fff'; sbFg='#1A1A1A'; }
+  if (mode==='loading'||mode==='auth'){ sbBg='#fff'; sbFg='#1A1A1A'; }
 
   const facultyTabs=[
     {id:'home',    label:'Home',    icon:'home'},
@@ -105,26 +143,21 @@ function App(){
   ];
   const tabs = role==='review'?reviewTabs:facultyTabs;
 
-  function DBBadge(){
-    if (!dbOnline) return null;
-    return (
-      <span style={{ display:'inline-flex', alignItems:'center', gap:4, height:18, padding:'0 7px',
-        borderRadius:9, background:'rgba(255,255,255,.18)', fontFamily:A.F.body, fontSize:10, color:'#fff' }}>
-        <span style={{ width:6, height:6, borderRadius:'50%', background:'#4CAF50' }}/>Live
-      </span>
-    );
-  }
-
   function bell(){
-    const unread = inds.filter(k=>k.review && ['APPROVED','REJECTED','RETURNED'].includes(k.status)).length;
+    const unread = inds.filter(k=>k.review&&['APPROVED','REJECTED','RETURNED'].includes(k.status)).length;
     return (
       <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-        <DBBadge/>
-        <button style={btnReset} onClick={()=>fireToast(unread+' indicator(s) have reviewer feedback','info')} aria-label="Notifications">
+        {dbOnline && (
+          <span style={{ display:'inline-flex', alignItems:'center', gap:4, height:18, padding:'0 7px',
+            borderRadius:9, background:'rgba(255,255,255,.18)', fontFamily:A.F.body, fontSize:10, color:'#fff' }}>
+            <span style={{ width:6, height:6, borderRadius:'50%', background:'#4CAF50' }}/>Live
+          </span>
+        )}
+        <button style={btnReset} onClick={()=>fireToast(`${unread} indicator(s) have reviewer feedback`,'info')}>
           <div style={{ position:'relative' }}>
             <Icon name="bell" size={22} color="#fff"/>
-            {unread>0 && <span style={{ position:'absolute', top:-3, right:-4, minWidth:15, height:15, padding:'0 3px', borderRadius:8,
-              background:A.C.yellow, color:A.C.maroonDark, fontFamily:A.F.mono, fontWeight:700, fontSize:9,
+            {unread>0 && <span style={{ position:'absolute', top:-3, right:-4, minWidth:15, height:15, padding:'0 3px',
+              borderRadius:8, background:A.C.yellow, color:A.C.maroonDark, fontFamily:A.F.mono, fontWeight:700, fontSize:9,
               display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid '+A.C.maroon }}>{unread}</span>}
           </div>
         </button>
@@ -136,7 +169,7 @@ function App(){
     if (stack.length){
       const top = stack[stack.length-1];
       if (top.screen==='section') return <SectionScreen store={store} params={top.params}/>;
-      if (top.screen==='entry')   return <EntryScreen store={store} params={top.params}/>;
+      if (top.screen==='entry')   return <EntryScreen   store={store} params={top.params}/>;
       if (top.screen==='review')  return <ReviewDetailScreen store={store} params={top.params}/>;
     }
     if (role==='review'){
@@ -157,9 +190,9 @@ function App(){
     <>
       <PhoneFrame statusBg={sbBg} statusFg={sbFg}>
         <Toast toast={toast}/>
-        {mode==='splash' && <Splash dbOnline={dbOnline}/>}
-        {mode==='login' && <LoginScreen store={store}/>}
-        {mode==='onboarding' && <OnboardingScreen store={store}/>}
+        {mode==='loading'   && <LoadingScreen/>}
+        {mode==='auth'      && <AuthScreen onAuth={handleAuth}/>}
+        {mode==='onboarding'&& <OnboardingScreen store={{ ...store, finishOnboarding(){ setSeenOnboard(true); setMode('app'); } }}/>}
         {mode==='app' && <>
           <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', position:'relative' }}>
             {renderApp()}
@@ -172,7 +205,7 @@ function App(){
         <TweakSection label="Brand"/>
         <TweakColor label="Primary" value={t.primary}
           options={['#6B1A1A','#7B1E2B','#581717','#3E2723']} onChange={v=>setTweak('primary',v)}/>
-        <TweakColor label="Accent" value={t.accent}
+        <TweakColor label="Accent"  value={t.accent}
           options={['#F5C518','#E0A100','#F2A93B','#FFCE3A']} onChange={v=>setTweak('accent',v)}/>
         <TweakSection label="Guidance"/>
         <TweakToggle label="Show inline tips" value={t.tips} onChange={v=>setTweak('tips',v)}/>
@@ -181,27 +214,16 @@ function App(){
   );
 }
 
-function Splash({ dbOnline }){
+function LoadingScreen(){
   return (
-    <div className="dsu-fade" style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
-      justifyContent:'center', background:'#fff', position:'relative' }}>
-      <img src="app/assets/dsu-logo.png" className="dsu-pop" style={{ width:88, height:88, objectFit:'contain' }}/>
-      <div style={{ fontFamily:A.F.display, fontWeight:700, fontSize:22, color:A.C.maroon, marginTop:18 }}>DSU ORIC PMS</div>
-      <div style={{ fontFamily:A.F.body, fontSize:13, color:A.C.ink2, marginTop:4 }}>Research. Tracked. Simplified.</div>
-      <div style={{ position:'absolute', bottom:60, width:140, height:4, borderRadius:2, background:A.C.border, overflow:'hidden' }}>
-        <div className="dsu-load" style={{ height:'100%', background:A.C.maroon, borderRadius:2 }}/>
+    <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center',
+      justifyContent:'center', background:'#fff' }}>
+      <img src="app/assets/dsu-logo.png" className="dsu-pop" style={{ width:80, height:80, objectFit:'contain' }}/>
+      <div style={{ fontFamily:A.F.display, fontWeight:700, fontSize:20, color:A.C.maroon, marginTop:16 }}>DSU ORIC PMS</div>
+      <div style={{ marginTop:20, width:120, height:4, borderRadius:2, background:A.C.border, overflow:'hidden' }}>
+        <div className="dsu-indef" style={{ height:'100%', width:'40%', background:A.C.maroon, borderRadius:2 }}/>
       </div>
-      <div style={{ position:'absolute', bottom:34, display:'flex', alignItems:'center', gap:6,
-        fontFamily:A.F.body, fontSize:11, color:A.C.ink3 }}>
-        <span>DHA Suffa University</span>
-        {dbOnline && <>
-          <span>·</span>
-          <span style={{ display:'inline-flex', alignItems:'center', gap:3, color:'#2E7D32' }}>
-            <span style={{ width:6, height:6, borderRadius:'50%', background:'#2E7D32', display:'inline-block' }}/>
-            Live DB
-          </span>
-        </>}
-      </div>
+      <div style={{ fontFamily:A.F.body, fontSize:12, color:A.C.ink3, marginTop:10 }}>Connecting…</div>
     </div>
   );
 }
